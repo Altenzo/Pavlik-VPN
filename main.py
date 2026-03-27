@@ -2,6 +2,8 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher
 from config import config
+from apps.db.database import async_session
+from bot.middlewares.db import DbSessionMiddleware
 from bot.handlers.start import start_router
 from bot.handlers.menu import menu_router
 
@@ -19,6 +21,9 @@ async def main():
     bot = Bot(token=config.BOT_TOKEN.get_secret_value())
     dp = Dispatcher()
     
+    # Регистрируем мидлвари
+    dp.update.middleware(DbSessionMiddleware(async_session))
+
     # Регистрируем роутеры
     dp.include_router(start_router)
     dp.include_router(menu_router)

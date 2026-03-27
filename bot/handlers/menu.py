@@ -1,21 +1,33 @@
 from aiogram import Router, F, types
+from sqlalchemy.ext.asyncio import AsyncSession
+from apps.db.repositories.user import get_user_by_id
 from bot.keyboards.main_menu import get_main_menu_keyboard
 from bot.keyboards.subscriptions import get_subscriptions_keyboard
-
 from bot.keyboards.common import get_back_keyboard
 
 menu_router = Router()
 
 @menu_router.callback_query(F.data == "profile")
-async def show_profile(callback: types.CallbackQuery):
+async def show_profile(callback: types.CallbackQuery, session: AsyncSession):
     """
-    Показ профиля пользователя
+    Показ профиля пользователя из БД
     """
+    # Берем юзера из базы
+    user = await get_user_by_id(session, callback.from_user.id)
+    
+    if not user:
+        await callback.answer("Ошибка: Профиль не найден. Нажмите /start")
+        return
+
+    status = "Активна ✅" if user.is_active else "Не активна ❌"
+    end_date = user.subscription_end.strftime("%d.%m.%Y") if user.subscription_end else "—"
+
     await callback.message.edit_text(
         f"👤 **Мой профиль**\n\n"
-        f"🆔 Ваш ID: `{callback.from_user.id}`\n"
-        f"📅 Статус подписки: **Не активна** ❌\n\n"
-        "Купите подписку или активируйте тест, чтобы начать!",
+        f"🆔 Ваш ID: `{user.user_id}`\n"
+        f"📅 Статус подписки: **{status}**\n"
+        f"⌛️ Истекает: `{end_date}`\n\n"
+        "Вы можете продлить подписку в меню ниже! 👇",
         reply_markup=get_back_keyboard(),
         parse_mode="Markdown"
     )

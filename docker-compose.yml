@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  # Наша база данных PostgreSQL
+  db:
+    image: postgres:16-alpine
+    container_name: vpn_bot_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASS:-postgres}
+      POSTGRES_DB: ${DB_NAME:-vpn_bot}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Наш кэш и хранилище Redis
+  redis:
+    image: redis:7.2-alpine
+    container_name: vpn_bot_redis
+    restart: always
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  default:
+    name: vpn_bot_network
