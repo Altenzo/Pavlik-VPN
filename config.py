@@ -13,9 +13,12 @@ class Settings(BaseSettings):
     DB_USER: str = "postgres"
     DB_PASS: str = "postgres"
     DB_NAME: str = "vpn_bot"
+    DATABASE_URL: str = ""
 
     @property
     def db_url(self) -> str:
+        if self.DATABASE_URL:
+            return self.DATABASE_URL
         return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASS}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
     # Redis Settings
