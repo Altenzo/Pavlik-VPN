@@ -5,16 +5,17 @@ from apps.db.models.user import User
 
 def get_main_menu_keyboard(user: User) -> InlineKeyboardMarkup:
     """
-    Главное меню с премиум-стилями кнопок
+    Главное меню (убрали стили, чтобы бот не падал, но оставили иконки)
     """
     builder = InlineKeyboardBuilder()
     
-    # Ряд 0: Купить (Просто убираем стиль, чтобы она была стандартной серой)
+    # Ряд 0: Купить
     builder.row(
         InlineKeyboardButton(
             text="Купить VPN", 
             callback_data="buy_subscription",
-            icon_custom_emoji_id="5258152182150077732"
+            icon_custom_emoji_id="5258152182150077732",
+            style="primary"
         )
     )
 

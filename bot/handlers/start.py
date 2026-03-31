@@ -8,8 +8,10 @@ from bot.keyboards.main_menu import get_main_menu_keyboard
 # Создаем роутер для этого модуля
 start_router = Router()
 
+from aiogram.filters import CommandObject
+
 @start_router.message(CommandStart())
-async def cmd_start(message: types.Message, session: AsyncSession):
+async def cmd_start(message: types.Message, command: CommandObject, session: AsyncSession):
     """
     Хендлер на команду /start (HTML без лишних ID в тексте)
     """
@@ -17,16 +19,15 @@ async def cmd_start(message: types.Message, session: AsyncSession):
     user = await get_user_by_id(session, user_id)
     
     if not user:
-        # Пытаемся получить реферальный код (например, /start ref_12345)
-        # Или просто /start 12345 (в зависимости от формата, который мы выберем)
-        # В нашем текущем коде было: t.me/bot?start={user_id}
-        args = message.command.args
+        args = command.args
         referred_by = None
         
         if args and args.isdigit():
             referred_by_id = int(args)
             # Проверяем, что не сам себя пригласил и реферер существует
             if referred_by_id != user_id:
+                # Мы даже можем не проверять существование реферера прямо сейчас, 
+                # если хотим упростить, но лучше проверить.
                 referrer = await get_user_by_id(session, referred_by_id)
                 if referrer:
                     referred_by = referred_by_id

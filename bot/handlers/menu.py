@@ -160,13 +160,15 @@ from config import config
 # Инициализируем сервис платежей
 platega = PlategaService(config.PLATEGA_MERCHANT_ID, config.PLATEGA_SECRET)
 
+from bot.keyboards.subscriptions import get_subscriptions_keyboard, get_payment_methods_keyboard
+
 @menu_router.callback_query(F.data == "buy_subscription")
 async def select_subscription(callback: types.CallbackQuery):
     """
-    Выбор тарифа (HTML + Premium Emoji)
+    Выбор тарифа (Шаг 1)
     """
     await callback.message.edit_text(
-        f'<tg-emoji emoji-id=\"5258389041006518073\">📦</tg-emoji> <b>Выберите тариф:</b>\n\n'
+        f'<tg-emoji emoji-id=\"5258389041006518073\">📦</tg-emoji> <b>Шаг 1: Выберите тариф:</b>\n\n'
         f"• Безлимит устройств\n"
         f"• Без логов\n"
         f"• Поддержка 24/7",
@@ -175,19 +177,39 @@ async def select_subscription(callback: types.CallbackQuery):
     )
     await callback.answer()
 
-import asyncio
+from bot.keyboards.subscriptions import get_subscriptions_keyboard, get_payment_methods_keyboard
 
-async def auto_check_payment(message: types.Message, tx_id: int, platega_id: str, session_maker):
+from bot.keyboards.subscriptions import get_subscriptions_keyboard, get_payment_methods_keyboard
+
+@menu_router.callback_query(F.data.startswith("select_sub:"))
+async def process_select_sub(callback: types.CallbackQuery):
+    """
+    Шаг 2: выбор способа оплаты после тарифа
+    """
+    _, tariff_key, amount = callback.data.split(":")
+    
+    await callback.message.edit_text(
+        f'<tg-emoji emoji-id=\"5409048419211682843\">💲</tg-emoji> <b>Шаг 2: Выберите способ оплаты:</b>\n\n'
+        f"Тариф: <b>{tariff_key}</b>\n"
+        f"К оплате: <b>{amount} ₽</b>",
+        reply_markup=get_payment_methods_keyboard(tariff_key, amount),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+import asyncio  
+
+async def auto_check_payment(message: types.Message, tx_id: int, external_id: str, session_maker):
     """
     Фоновая задача для автоматического подтверждения оплаты (Auto-confirm)
-    Теория: Опрашиваем API раз в 20 секунд в течение 10 минут.
     """
     for _ in range(30): # Проверяем в течение 10 минут (30 * 20 сек)
         await asyncio.sleep(20)
         
-        status = await platega.check_status(platega_id)
+        status = await platega.check_status(external_id)
         if status == "CONFIRMED":
             async with session_maker() as session:
+                from apps.db.repositories.transaction import update_transaction_status
                 await update_transaction_status(session, tx_id, "CONFIRMED")
             
             await message.edit_text(
@@ -200,6 +222,7 @@ async def auto_check_payment(message: types.Message, tx_id: int, platega_id: str
         
         if status in ["CANCELED", "FAILED"]:
             async with session_maker() as session:
+                from apps.db.repositories.transaction import update_transaction_status
                 await update_transaction_status(session, tx_id, status)
             
             await message.edit_text(
@@ -214,18 +237,31 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
     """
     Процесс покупки тарифа и запуск авто-проверки
     """
-    _, tariff_key, amount = callback.data.split(":")
+    data = callback.data.split(":")
+    tariff_key, amount, method = data[1], data[2], data[3]
     amount = float(amount)
 
-    await callback.message.edit_text("<tg-emoji emoji-id=\"5199457120428249992\">⏳</tg-emoji> <b>Загрузка платежа...</b>", parse_mode="HTML")
+    # Если выбрана КРИПТА
+    if method == "crypto":
+        await callback.answer(
+            "🛑 Технические работы!\n\nВ данный момент прием криптовалют настраивается. Пожалуйста, используйте СБП или попробуйте позже!", 
+            show_alert=True
+        )
+        return
 
-    tx = await create_transaction(session, callback.from_user.id, amount, tariff_key)
+    await callback.message.edit_text("⏳ <b>Формируем счет...</b>", parse_mode="HTML")
+
+    from apps.db.repositories.transaction import create_transaction, update_transaction_id
+    tx = await create_transaction(session, callback.from_user.id, amount, tariff_key, payment_method=method)
     description = f"Оплата VPN: {tariff_key}"
+    
+    # Провайдер по методу (СБП)
     payment_data = await platega.create_transaction(amount, description, str(tx.id))
 
     if not payment_data or "redirect" not in payment_data:
         await callback.message.edit_text(
-            "<tg-emoji emoji-id=\"5260342697075416641\">❌</tg-emoji> <b>Ошибка при создании счета.</b>",
+            "<tg-emoji emoji-id=\"5260342697075416641\">❌</tg-emoji> <b>Ошибка при создании счета.</b>\n"
+            "Попробуйте позже или выберите другой способ.",
             reply_markup=get_back_keyboard(),
             parse_mode="HTML"
         )
@@ -233,7 +269,7 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
 
     await update_transaction_id(session, tx.id, payment_data["transactionId"])
     
-    # Запускаем фоновую задачу авто-проверки (не ждем её завершения - .create_task)
+    # Запускаем фоновую задачу (используем async_session из database.py)
     from apps.db.database import async_session
     asyncio.create_task(
         auto_check_payment(
@@ -244,16 +280,11 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
         )
     )
 
-    tariff_name = {"month_1": "1 месяц", "month_3": "3 месяца", "month_6": "6 месяцев", "month_12": "12 месяцев"}.get(tariff_key, tariff_key)
-    days = {"month_1": "30", "month_3": "90", "month_6": "180", "month_12": "365"}.get(tariff_key, "30")
-
     await callback.message.edit_text(
-        f"<tg-emoji emoji-id=\"5258204546391351475\">💳</tg-emoji> <b>Подтверждение покупки</b>\n\n"
-        f"Срок: <b>{days} дней</b>\n"
-        f"Устройств: <b>Безлимит</b>\n"
-        f"Цена: <b>{amount}₽</b>\n\n"
-        "Нажми кнопку ниже для оплаты.\n"
-        "После оплаты бот <b>автоматически</b> увидит платеж в течение минуты! <tg-emoji emoji-id=\"5260221883940347555\">🚀</tg-emoji>",
+        f"<tg-emoji emoji-id=\"5258477770735885832\">📄</tg-emoji> <b>Счет сформирован!</b>\n\n"
+        f"Сумма: <b>{amount} ₽</b>\n"
+        f"Метод: <b>СБП</b>\n\n"
+        f"Нажмите кнопку ниже, чтобы перейти к оплате.",
         reply_markup=get_payment_keyboard(payment_data["redirect"], str(tx.id)),
         parse_mode="HTML"
     )

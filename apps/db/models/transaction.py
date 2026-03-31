@@ -5,28 +5,26 @@ from datetime import datetime
 
 class Transaction(Base):
     """
-    Модель транзакции (платежа)
-    Теория: Мы храним транзакции отдельно от юзеров для ведения логов
-    и предотвращения дублирования платежей (идемпотентность).
+    Универсальная модель транзакции (Best Practice)
     """
     __tablename__ = "transactions"
 
-    # У каждой транзакции свой уникальный ID (автоинкремент)
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    
-    # Ссылаемся на пользователя через Telegram ID (Foreign Key)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True)
     
-    # Данные платежа
+    # Сумма и валюта
     amount: Mapped[float] = mapped_column(Float)
     currency: Mapped[str] = mapped_column(String(10), default="RUB")
     
-    # Данные от Platega
-    platega_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=True)
-    status: Mapped[str] = mapped_column(String(50), default="PENDING")
+    # Универсальные данные платежа
+    external_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=True) # ID в любой платежке
+    payment_method: Mapped[str] = mapped_column(String(20), default="sbp") # sbp, crypto
+    provider: Mapped[str] = mapped_column(String(50), default="platega") # platega, hellcat
     
-    # Какой тариф был выбран (например, 'month_1')
+    status: Mapped[str] = mapped_column(String(50), default="PENDING")
     tariff_key: Mapped[str] = mapped_column(String(50))
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
     def __repr__(self) -> str:
-        return f"<Transaction id={self.id} user_id={self.user_id} amount={self.amount}>"
+        return f"<Transaction id={self.id} method={self.payment_method} amount={self.amount}>"
