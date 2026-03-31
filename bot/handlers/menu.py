@@ -253,10 +253,16 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
 
     from apps.db.repositories.transaction import create_transaction, update_transaction_id
     tx = await create_transaction(session, callback.from_user.id, amount, tariff_key, payment_method=method)
+    
+    # Расчет суммы для платежки (если комиссия 13% платится нами)
+    # Формула: то, что видит клиент = amount_to_pay * 1.13. 
+    # Значит, мы шлем: amount / 1.13, чтобы клиент увидел ровно 'amount'.
+    amount_to_pay = round(amount / 1.13, 2)
+    
     description = f"Оплата VPN: {tariff_key}"
     
     # Провайдер по методу (СБП)
-    payment_data = await platega.create_transaction(amount, description, str(tx.id))
+    payment_data = await platega.create_transaction(amount_to_pay, description, str(tx.id))
 
     if not payment_data or "redirect" not in payment_data:
         await callback.message.edit_text(
