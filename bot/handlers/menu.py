@@ -92,39 +92,29 @@ from sqlalchemy import func
 @menu_router.callback_query(F.data == "referrals")
 async def show_referrals(callback: types.CallbackQuery, session: AsyncSession):
     """
-    Реферальная система (HTML + Профессиональный дизайн)
+    Реферальная система (35% с первого уровня)
     """
     user_id = callback.from_user.id
     user = await session.get(User, user_id)
     
-    # 1. Считаем количество рефералов 1-го уровня
-    stmt1 = select(func.count(User.id)).where(User.referred_by == user_id)
-    res1 = await session.execute(stmt1)
-    lvl1_count = res1.scalar() or 0
+    # Считаем количество приглашенных друзей
+    stmt = select(func.count(User.id)).where(User.referred_by == user_id)
+    res = await session.execute(stmt)
+    ref_count = res.scalar() or 0
     
-    # 2. Считаем количество рефералов 2-го уровня
-    # Для этого ищем тех, у кого referred_by входит в список ID рефералов 1-го уровня
-    stmt2 = select(func.count(User.id)).where(User.referred_by.in_(
-        select(User.id).where(User.referred_by == user_id)
-    ))
-    res2 = await session.execute(stmt2)
-    lvl2_count = res2.scalar() or 0
-    
-    # Формируем текст
+    # Формируем ссылку
     bot_username = (await callback.bot.get_me()).username
     ref_link = f"https://t.me/{bot_username}?start={user_id}"
     
-    # Конфигурация уровней (20% и 5%)
-    lvl1_percent = 20
-    lvl2_percent = 5
-    
     await callback.message.edit_text(
         f"<b><tg-emoji emoji-id=\"5258486128742244085\">👥</tg-emoji> Реферальная система</b>\n\n"
-        f"Приглашайте друзей и получайте бонусы с их покупок!\n\n"
-        f"Реферальная ссылка: <code>{ref_link}</code>\n\n"
+        f"Приглашайте друзей и получайте <b>35%</b> с каждой их покупки на свой баланс!\n\n"
+        f"Ваша ссылка: <code>{ref_link}</code>\n\n"
+        f"<b>Ваша статистика:</b>\n"
+        f"• Приглашено друзей: <b>{ref_count}</b>\n"
         f"<b><tg-emoji emoji-id=\"5258501105293205250\">💰</tg-emoji> Всего заработано:</b> {user.total_earned:.2f} ₽\n"
         f"<b><tg-emoji emoji-id=\"5258368777350816286\">💰</tg-emoji> Доступно для вывода:</b> {user.referral_balance:.2f} ₽\n\n"
-        f"Для вывода средств обратитесь в поддержку.",
+        f"<i>Минимальная сумма для вывода: 1000 ₽. По всем вопросам обратитесь в поддержку.</i>",
         reply_markup=get_referral_keyboard(ref_link),
         parse_mode="HTML"
     )
