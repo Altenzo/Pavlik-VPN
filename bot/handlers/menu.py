@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 menu_router = Router()
 
-# Инициализируем сервисы один раз при старте
 platega = PlategaService(config.PLATEGA_MERCHANT_ID, config.PLATEGA_SECRET)
 remnawave = RemnawaveService(
     panel_url=config.PANEL_URL,
@@ -37,7 +36,6 @@ remnawave = RemnawaveService(
     inbound_uuid=config.PANEL_INBOUND_UUID,
 )
 
-# Тарифы → количество дней
 TARIFF_DAYS = {
     "month_1": 30,
     "month_3": 90,
@@ -117,6 +115,30 @@ async def show_my_subs(callback: types.CallbackQuery, session: AsyncSession):
         f"<b>Ваши подписки</b>\n\n"
         f"Статус: {sub_status}{vless_text}",
         reply_markup=get_back_to_profile_keyboard(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@menu_router.callback_query(F.data == "user_agreement")
+async def show_user_agreement(callback: types.CallbackQuery):
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📄 Пользовательское соглашение", url="https://telegra.ph/POLZOVATELSKOE-SOGLASHENIE-03-30-18")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔒 Политика конфиденциальности", url="https://telegra.ph/Politika-konfidencialnosti-04-03-41")
+    )
+    builder.row(
+        InlineKeyboardButton(text="Назад", callback_data="profile", icon_custom_emoji_id="5258236805890710909", style="danger")
+    )
+
+    await callback.message.edit_text(
+        "<b>📄 Документы</b>\n\nНажмите на нужный документ чтобы ознакомиться:",
+        reply_markup=builder.as_markup(),
         parse_mode="HTML"
     )
     await callback.answer()
@@ -213,7 +235,6 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
 
     await callback.message.edit_text("⏳ <b>Формируем счет...</b>", parse_mode="HTML")
 
-    # Bug 9 fix: проверяем дубли PENDING транзакций
     pending_count = await count_pending_transactions(session, callback.from_user.id)
     if pending_count >= 1:
         await callback.message.edit_text(
@@ -226,11 +247,9 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
 
     tx = await create_transaction(session, callback.from_user.id, amount, tariff_key, payment_method=method)
 
-    # Комиссия платёжки: пользователь видит amount, мы шлём amount/1.13
     amount_to_pay = round(amount / 1.13, 2)
     payment_data = await platega.create_transaction(amount_to_pay, f"VPN: {tariff_key}", str(tx.id))
 
-    # Bug 3 fix: обрабатываем None от platega
     if not payment_data or "redirect" not in payment_data:
         await callback.message.edit_text(
             "<tg-emoji emoji-id=\"5260342697075416641\">❌</tg-emoji> <b>Ошибка при создании счета.</b>\n"
@@ -242,7 +261,6 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
 
     await update_transaction_id(session, tx.id, payment_data["transactionId"])
 
-    # Запускаем фоновую авто-проверку
     import asyncio
     from apps.db.database import async_session
     asyncio.create_task(
@@ -260,7 +278,6 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
 
 
 async def _auto_confirm_payment(message: types.Message, tx_id: int, external_id: str, session_maker):
-    """Фоновая задача: каждые 20 сек проверяет статус платежа (до 10 мин)."""
     import asyncio
     for _ in range(30):
         await asyncio.sleep(20)
@@ -296,7 +313,6 @@ async def _auto_confirm_payment(message: types.Message, tx_id: int, external_id:
                 pass
             return
 
-    # Таймаут — 10 минут истекло, уведомляем пользователя
     async with session_maker() as session:
         await update_transaction_status(session, tx_id, "EXPIRED")
     try:
@@ -310,7 +326,6 @@ async def _auto_confirm_payment(message: types.Message, tx_id: int, external_id:
 
 
 async def _activate_subscription_after_payment(session: AsyncSession, tx_id: int):
-    """Активирует подписку: начисляет дни + создаёт/продлевает пользователя в Remnawave."""
     tx = await get_transaction(session, tx_id)
     if not tx or tx.status == "CONFIRMED":
         return
@@ -325,7 +340,6 @@ async def _activate_subscription_after_payment(session: AsyncSession, tx_id: int
     now = datetime.now()
 
     if user.vpn_uuid:
-        # Пользователь уже есть в панели — продлеваем
         current_end = user.subscription_end if (user.subscription_end and user.subscription_end > now) else now
         new_end = current_end + timedelta(days=days)
         ok = await remnawave.extend_user(user.vpn_uuid, new_expire_dt=new_end)
@@ -333,7 +347,6 @@ async def _activate_subscription_after_payment(session: AsyncSession, tx_id: int
             user.subscription_end = new_end
             user.is_active = True
     else:
-        # Создаём нового пользователя в панели
         vpn_user = await remnawave.create_user(telegram_id=user.id, days=days)
         if vpn_user:
             user.vpn_uuid = vpn_user.uuid
@@ -384,12 +397,6 @@ async def show_trial_confirmation(callback: types.CallbackQuery, session: AsyncS
 
 @menu_router.callback_query(F.data == "claim_trial")
 async def claim_trial(callback: types.CallbackQuery, session: AsyncSession):
-    """
-    Активирует триал:
-      1. Создаёт пользователя в Remnawave на 3 дня
-      2. Сохраняет vpn_uuid и vless_link в БД
-      3. Ставит флаг trial_used
-    """
     user = await session.get(User, callback.from_user.id)
 
     if user.trial_used:
@@ -398,7 +405,6 @@ async def claim_trial(callback: types.CallbackQuery, session: AsyncSession):
 
     await callback.message.edit_text("⏳ <b>Активируем доступ...</b>", parse_mode="HTML")
 
-    # Создаём пользователя в Remnawave
     vpn_user = await remnawave.create_user(telegram_id=user.id, days=3)
 
     now = datetime.now()
@@ -411,7 +417,6 @@ async def claim_trial(callback: types.CallbackQuery, session: AsyncSession):
         link_text = f"\n\n<b>Ссылка для подключения:</b>\n<code>{vpn_user.subscription_url}</code>"
         extra_msg = "\nСкопируйте ссылку и импортируйте в <b>v2rayNG</b> (Android) или <b>FoXray</b> (iOS)."
     else:
-        # Панель недоступна — всё равно активируем триал, ссылку выдадим позже
         link_text = ""
         extra_msg = "\n\nСсылку для подключения мы выдадим в течение нескольких минут — следите за уведомлениями."
 
@@ -434,7 +439,7 @@ async def claim_trial(callback: types.CallbackQuery, session: AsyncSession):
 
 
 # ──────────────────────────────────────────────
-# Общее
+# Инструкции
 # ──────────────────────────────────────────────
 
 @menu_router.callback_query(F.data == "instructions")
@@ -444,12 +449,12 @@ async def show_instructions(callback: types.CallbackQuery):
 
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="Windows", callback_data="instr:windows", icon_custom_emoji_id="5359700310132536945"),
-        InlineKeyboardButton(text="iOS", callback_data="instr:ios", icon_custom_emoji_id="5359840360426126173")
+        InlineKeyboardButton(text="📱 Android", callback_data="instr:android"),
+        InlineKeyboardButton(text="🍎 iOS", callback_data="instr:ios")
     )
     builder.row(
-        InlineKeyboardButton(text="MacOS", callback_data="instr:macos", icon_custom_emoji_id="5359661453563414473"),
-        InlineKeyboardButton(text="Android", callback_data="instr:android", icon_custom_emoji_id="5359575107540892257")
+        InlineKeyboardButton(text="💻 Windows", callback_data="instr:windows"),
+        InlineKeyboardButton(text="🖥 macOS", callback_data="instr:macos")
     )
     builder.row(
         InlineKeyboardButton(text="Назад", callback_data="back_to_main", icon_custom_emoji_id="5258236805890710909", style="danger")
@@ -464,50 +469,49 @@ async def show_instructions(callback: types.CallbackQuery):
 
 
 @menu_router.callback_query(F.data.startswith("instr:"))
-async def show_platform_instruction(callback: types.CallbackQuery):
+async def show_platform_apps(callback: types.CallbackQuery):
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     from aiogram.types import InlineKeyboardButton
 
     platform = callback.data.split(":")[1]
-
-    instructions = {
-        "windows": (
-            "<tg-emoji emoji-id=\"5359700310132536945\">🪟</tg-emoji> <b>Windows</b>\n\n"
-            "1. Скачайте <b>Hiddify</b> или <b>v2rayN</b>\n"
-            "2. Перейдите в <b>Профиль → Мои подписки</b> и скопируйте ссылку\n"
-            "3. В приложении нажмите «+» и вставьте ссылку\n"
-            "4. Нажмите «Подключить» 🚀"
-        ),
-        "ios": (
-            "<tg-emoji emoji-id=\"5359840360426126173\">🍎</tg-emoji> <b>iOS</b>\n\n"
-            "1. Установите <b>FoXray</b> или <b>Streisand</b> из App Store\n"
-            "2. Перейдите в <b>Профиль → Мои подписки</b> и скопируйте ссылку\n"
-            "3. В приложении нажмите «+» → «Импорт из буфера обмена»\n"
-            "4. Нажмите «Подключить» 🚀"
-        ),
-        "macos": (
-            "<tg-emoji emoji-id=\"5359661453563414473\">🖥</tg-emoji> <b>MacOS</b>\n\n"
-            "1. Установите <b>Hiddify</b> или <b>FoXray</b>\n"
-            "2. Перейдите в <b>Профиль → Мои подписки</b> и скопируйте ссылку\n"
-            "3. В приложении нажмите «+» и вставьте ссылку\n"
-            "4. Нажмите «Подключить» 🚀"
-        ),
-        "android": (
-            "<tg-emoji emoji-id=\"5359575107540892257\">🤖</tg-emoji> <b>Android</b>\n\n"
-            "1. Установите <b>Hiddify</b> или <b>v2rayNG</b> из Google Play\n"
-            "2. Перейдите в <b>Профиль → Мои подписки</b> и скопируйте ссылку\n"
-            "3. В приложении нажмите «+» → «Импорт из буфера обмена»\n"
-            "4. Нажмите «Подключить» 🚀"
-        ),
+    platform_names = {
+        "android": "📱 Android",
+        "ios": "🍎 iOS",
+        "windows": "💻 Windows",
+        "macos": "🖥 macOS",
     }
 
     builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="Happ", callback_data=f"app:{platform}:happ"),
+        InlineKeyboardButton(text="V2RayTun", callback_data=f"app:{platform}:v2raytun")
+    )
     builder.row(
         InlineKeyboardButton(text="Назад", callback_data="instructions", icon_custom_emoji_id="5258236805890710909", style="danger")
     )
 
     await callback.message.edit_text(
-        instructions.get(platform, "Инструкция не найдена"),
+        f"<b>{platform_names.get(platform, platform)}</b>\n\nВыберите приложение:",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@menu_router.callback_query(F.data.startswith("app:"))
+async def show_app_wip(callback: types.CallbackQuery):
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+
+    platform = callback.data.split(":")[1]
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="Назад", callback_data=f"instr:{platform}", icon_custom_emoji_id="5258236805890710909", style="danger")
+    )
+
+    await callback.message.edit_text(
+        "🚧 <b>Пока в разработке</b>\n\nИнструкция скоро появится. Следите за обновлениями в @blago_vpn_news",
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
     )
@@ -536,13 +540,8 @@ from aiogram.types import ErrorEvent
 
 @menu_router.errors()
 async def global_error_handler(event: ErrorEvent):
-    """
-    Ловит все необработанные исключения в хендлерах.
-    Пользователь видит заглушку, админы — текст ошибки.
-    """
     logger.error(f"Необработанная ошибка: {event.exception}", exc_info=True)
 
-    # Пытаемся ответить пользователю заглушкой
     try:
         update = event.update
         if update.callback_query:
@@ -554,7 +553,6 @@ async def global_error_handler(event: ErrorEvent):
     except Exception:
         pass
 
-    # Уведомляем админов об ошибке
     try:
         from main import notify_admins
         err_text = (
@@ -566,3 +564,4 @@ async def global_error_handler(event: ErrorEvent):
             await notify_admins(bot, err_text)
     except Exception:
         pass
+
