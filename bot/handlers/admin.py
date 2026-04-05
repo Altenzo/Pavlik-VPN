@@ -4,7 +4,7 @@ import logging.handlers
 import os
 import subprocess
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Router, types, F
 from aiogram.filters import Command
@@ -114,7 +114,6 @@ async def cmd_give_sub(message: types.Message, session: AsyncSession):
             return
 
         now = datetime.now()
-        from datetime import timedelta
 
         if user.vpn_uuid:
             current_end = user.subscription_end if (user.subscription_end and user.subscription_end > now) else now
