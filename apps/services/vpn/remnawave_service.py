@@ -108,3 +108,6 @@ class RemnawaveService:
             expire_at=expire_dt,
             traffic_limit_bytes=d.get("trafficLimitBytes") or 0,
         )
+            expire_at=expire_dt,
+            traffic_limit_bytes=d.get("trafficLimitBytes") or 0,
+        )
