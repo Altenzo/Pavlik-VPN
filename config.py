@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     PLATEGA_MERCHANT_ID: str
     PLATEGA_SECRET: str
 
+    INTERNAL_SQUAD_UUIDS: List[str] = Field(default_factory=list)
+
     REFERRAL_COMMISSION_RATE: float = 0.20
 
     model_config = SettingsConfigDict(
