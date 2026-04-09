@@ -1,6 +1,9 @@
+import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from apps.db.models.user import User
+
+logger = logging.getLogger(__name__)
 
 async def get_user_by_id(session: AsyncSession, user_id: int) -> User:
     """
@@ -23,4 +26,5 @@ async def register_user(session: AsyncSession, user_id: int, username: str, full
     session.add(new_user)
     await session.commit()
     await session.refresh(new_user)
+    logger.info(f"Зарегистрирован пользователь id={user_id} username={username}")
     return new_user

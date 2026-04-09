@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 menu_router = Router()
 
+_payment_locks: dict[int, asyncio.Lock] = {}
+
 platega = PlategaService(config.PLATEGA_MERCHANT_ID, config.PLATEGA_SECRET)
 remnawave = RemnawaveService(
     panel_url=config.PANEL_URL,
@@ -155,6 +157,9 @@ async def show_user_agreement(callback: types.CallbackQuery):
 async def show_referrals(callback: types.CallbackQuery, session: AsyncSession):
     user_id = callback.from_user.id
     user = await session.get(User, user_id)
+    if not user:
+        await callback.answer("Ошибка: Пользователь не найден.")
+        return
 
     stmt1 = select(func.count(User.id)).where(User.referred_by == user_id)
     lvl1_count = (await session.execute(stmt1)).scalar() or 0
@@ -179,6 +184,9 @@ async def show_referrals(callback: types.CallbackQuery, session: AsyncSession):
 @menu_router.callback_query(F.data == "withdraw_referral")
 async def withdraw_referral(callback: types.CallbackQuery, session: AsyncSession):
     user = await session.get(User, callback.from_user.id)
+    if not user:
+        await callback.answer("Ошибка: Пользователь не найден.")
+        return
     if user.referral_balance < 1000:
         await callback.answer(
             f"❌ Минимальная сумма вывода — 1000 ₽\nВаш баланс: {user.referral_balance:.2f} ₽",
@@ -190,7 +198,7 @@ async def withdraw_referral(callback: types.CallbackQuery, session: AsyncSession
         f"<b>💰 Вывод средств</b>\n\n"
         f"Ваш баланс: <b>{user.referral_balance:.2f} ₽</b>\n\n"
         f"Для выплаты на USDT TRC-20 свяжитесь с поддержкой, укажите ваш ID: <code>{user.id}</code>.\n\n"
-        f"Поддержка: @blago_vpn_manager",
+        f"Поддержка: {config.SUPPORT_USERNAME}",
         reply_markup=get_back_keyboard(),
         parse_mode="HTML"
     )
@@ -250,7 +258,7 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
 
     tx = await create_transaction(session, callback.from_user.id, amount, tariff_key, payment_method=method)
 
-    amount_to_pay = round(amount / 1.13, 2)
+    amount_to_pay = round(amount / config.PAYMENT_COMMISSION_MULTIPLIER, 2)
     payment_data = await platega.create_transaction(amount_to_pay, f"VPN: {tariff_key}", str(tx.id))
 
     if not payment_data or "redirect" not in payment_data:
@@ -325,7 +333,7 @@ async def _auto_confirm_payment(message: types.Message, tx_id: int, external_id:
         await update_transaction_status(session, tx_id, "EXPIRED")
     try:
         await message.edit_text(
-            "⏰ <b>Время ожидания оплаты истекло.</b>\n\nЕсли вы оплатили — обратитесь в поддержку: @blago_vpn_manager",
+            f"⏰ <b>Время ожидания оплаты истекло.</b>\n\nЕсли вы оплатили — обратитесь в поддержку: {config.SUPPORT_USERNAME}",
             reply_markup=get_back_keyboard(),
             parse_mode="HTML"
         )
@@ -334,6 +342,13 @@ async def _auto_confirm_payment(message: types.Message, tx_id: int, external_id:
 
 
 async def _activate_subscription_after_payment(session: AsyncSession, tx_id: int):
+    lock = _payment_locks.setdefault(tx_id, asyncio.Lock())
+    async with lock:
+        await _activate_subscription_inner(session, tx_id)
+    _payment_locks.pop(tx_id, None)
+
+
+async def _activate_subscription_inner(session: AsyncSession, tx_id: int):
     tx = await get_transaction(session, tx_id)
     if not tx or tx.status == "CONFIRMED":
         return
@@ -378,7 +393,7 @@ async def show_promo_code(callback: types.CallbackQuery):
     await callback.message.edit_text(
         "<tg-emoji emoji-id=\"5359719332542718652\">🎟</tg-emoji> <b>Активация промокода</b>\n\n"
         "Введите промокод в ответном сообщении или обратитесь в поддержку:\n"
-        "@blago_vpn_manager",
+        f"{config.SUPPORT_USERNAME}",
         reply_markup=get_back_keyboard(),
         parse_mode="HTML"
     )
@@ -392,14 +407,17 @@ async def show_promo_code(callback: types.CallbackQuery):
 @menu_router.callback_query(F.data == "confirm_trial_request")
 async def show_trial_confirmation(callback: types.CallbackQuery, session: AsyncSession):
     user = await session.get(User, callback.from_user.id)
+    if not user:
+        await callback.answer("Ошибка: Пользователь не найден.")
+        return
     if user.trial_used:
         await callback.answer("❌ Вы уже использовали пробный период!", show_alert=True)
         return
 
-    end_date = (datetime.now() + timedelta(days=3)).strftime("%d.%m.%Y %H:%M")
+    end_date = (datetime.now() + timedelta(days=config.TRIAL_DAYS)).strftime("%d.%m.%Y %H:%M")
     await callback.message.edit_text(
         f"<b>Активация пробного периода</b>\n\n"
-        f"Бесплатный доступ на <b>3 дня</b> до <b>{end_date}</b>.\n\n"
+        f"Бесплатный доступ на <b>{config.TRIAL_DAYS} дн.</b> до <b>{end_date}</b>.\n\n"
         f"Активировать можно только <b>один раз</b>.",
         reply_markup=get_trial_confirmation_keyboard(),
         parse_mode="HTML"
@@ -410,6 +428,9 @@ async def show_trial_confirmation(callback: types.CallbackQuery, session: AsyncS
 @menu_router.callback_query(F.data == "claim_trial")
 async def claim_trial(callback: types.CallbackQuery, session: AsyncSession):
     user = await session.get(User, callback.from_user.id)
+    if not user:
+        await callback.answer("Ошибка: Пользователь не найден.")
+        return
 
     if user.trial_used:
         await callback.answer("❌ Вы уже использовали пробный период!", show_alert=True)
@@ -417,10 +438,10 @@ async def claim_trial(callback: types.CallbackQuery, session: AsyncSession):
 
     await callback.message.edit_text("⏳ <b>Активируем доступ...</b>", parse_mode="HTML")
 
-    vpn_user = await remnawave.create_user(telegram_id=user.id, days=3)
+    vpn_user = await remnawave.create_user(telegram_id=user.id, days=config.TRIAL_DAYS)
 
     now = datetime.now()
-    new_end = now + timedelta(days=3)
+    new_end = now + timedelta(days=config.TRIAL_DAYS)
 
     if vpn_user:
         user.vpn_uuid = vpn_user.uuid
@@ -433,7 +454,7 @@ async def claim_trial(callback: types.CallbackQuery, session: AsyncSession):
         extra_msg = "\n\nСсылку для подключения мы выдадим в течение нескольких минут — следите за уведомлениями."
 
     if user.subscription_end and user.subscription_end > now:
-        user.subscription_end += timedelta(days=3)
+        user.subscription_end += timedelta(days=config.TRIAL_DAYS)
     else:
         user.subscription_end = new_end
 
@@ -442,7 +463,7 @@ async def claim_trial(callback: types.CallbackQuery, session: AsyncSession):
 
     await callback.message.edit_text(
         f"<tg-emoji emoji-id=\"5260341314095947411\">✅</tg-emoji> <b>Пробный период активирован!</b>\n\n"
-        f"Доступ выдан на <b>3 дня</b> до <b>{user.subscription_end.strftime('%d.%m.%Y %H:%M')}</b>."
+        f"Доступ выдан на <b>{config.TRIAL_DAYS} дн.</b> до <b>{user.subscription_end.strftime('%d.%m.%Y %H:%M')}</b>."
         f"{link_text}{extra_msg}",
         reply_markup=get_main_menu_keyboard(user),
         parse_mode="HTML"
@@ -533,6 +554,9 @@ async def show_app_wip(callback: types.CallbackQuery):
 @menu_router.callback_query(F.data == "back_to_main")
 async def back_to_main(callback: types.CallbackQuery, session: AsyncSession):
     user = await session.get(User, callback.from_user.id)
+    if not user:
+        await callback.answer("Ошибка: Пользователь не найден.")
+        return
     await callback.message.edit_text(
         "<tg-emoji emoji-id=\"5258152182150077732\">⚡</tg-emoji> <b>Blago VPN — Ваш персональный ключ к свободе.</b>\n\n"
         "Забудьте о границах в интернете. Мы обеспечиваем сверхбыстрое соединение, абсолютную анонимность и доступ к любому контенту в один клик.\n\n"

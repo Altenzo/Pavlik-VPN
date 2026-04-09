@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     EXTERNAL_SQUAD_UUID: Optional[str] = None
 
     REFERRAL_COMMISSION_RATE: float = 0.20
+    PAYMENT_COMMISSION_MULTIPLIER: float = 1.13
+    TRIAL_DAYS: int = 3
+    SUPPORT_USERNAME: str = "@blago_vpn_manager"
 
     model_config = SettingsConfigDict(
         env_file=".env",

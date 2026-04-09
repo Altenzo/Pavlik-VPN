@@ -24,9 +24,9 @@ class PlategaService:
         }
 
     async def create_transaction(
-        self, 
-        amount: float, 
-        description: str, 
+        self,
+        amount: float,
+        description: str,
         order_id: str,
         currency: str = "RUB",
         payment_method: int = 2  # 2 - СБП по умолчанию
@@ -35,7 +35,7 @@ class PlategaService:
         Создает транзакцию и возвращает ссылку на оплату
         """
         endpoint = f"{self.base_url}/transaction/process"
-        
+
         payload = {
             "command": "process", # Добавляем обязательное поле 'command'
             "id": order_id,
@@ -49,7 +49,8 @@ class PlategaService:
             "failedUrl": f"https://t.me/blago_vpn_news"
         }
 
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             try:
                 # Отладочный лог заголовков (маскируем секрет)
                 masked_headers = {k: (v[:4] + "***" if "secret" in k.lower() or "key" in k.lower() else v) for k, v in self.headers.items()}
@@ -79,7 +80,8 @@ class PlategaService:
         """
         endpoint = f"{self.base_url}/transaction/{transaction_id}"
         
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             try:
                 async with session.get(endpoint, headers=self.headers) as response:
                     if response.status == 200:

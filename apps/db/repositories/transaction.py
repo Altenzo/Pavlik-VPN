@@ -1,8 +1,11 @@
+import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from apps.db.models.transaction import Transaction
 from apps.db.models.user import User
 from config import config
+
+logger = logging.getLogger(__name__)
 
 
 async def get_transaction(session: AsyncSession, transaction_id: int) -> Transaction | None:
@@ -42,6 +45,7 @@ async def create_transaction(
     session.add(transaction)
     await session.commit()
     await session.refresh(transaction)
+    logger.info(f"Создана транзакция id={transaction.id} user={user_id} amount={amount} tariff={tariff_key}")
     return transaction
 
 

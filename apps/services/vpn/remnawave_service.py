@@ -33,7 +33,8 @@ class RemnawaveService:
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
         url = f"{self.panel_url}{path}"
-        async with aiohttp.ClientSession() as s:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
             async with s.request(method, url, headers=self._headers, **kwargs) as r:
                 text = await r.text()
                 if r.status >= 400:
@@ -108,7 +109,7 @@ class RemnawaveService:
         try:
             expire_dt = datetime.fromisoformat(raw_expire.replace("Z", "+00:00")).replace(tzinfo=None)
         except Exception:
-            expire_dt = datetime.utcnow()
+            expire_dt = datetime.now(timezone.utc).replace(tzinfo=None)
 
         return VpnUser(
             uuid=uuid,
