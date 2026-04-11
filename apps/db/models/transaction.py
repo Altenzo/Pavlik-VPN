@@ -2,6 +2,7 @@ from sqlalchemy import BigInteger, String, Float, ForeignKey, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column
 from apps.db.models.base import Base
 from datetime import datetime
+from typing import Optional
 
 class Transaction(Base):
     """
@@ -23,6 +24,7 @@ class Transaction(Base):
     
     status: Mapped[str] = mapped_column(String(50), default="PENDING")
     tariff_key: Mapped[str] = mapped_column(String(50))
+    redirect_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)  # ссылка на страницу оплаты
     
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 

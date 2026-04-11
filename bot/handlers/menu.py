@@ -28,7 +28,6 @@ from apps.db.repositories.transaction import (
     get_pending_transaction,
     update_transaction_id,
     update_transaction_status,
-    count_pending_transactions,
 )
 from apps.db.repositories.promo_code import (
     get_promo_by_code,
@@ -282,6 +281,7 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
     data = callback.data.split(":")
     tariff_key, amount, method = data[1], data[2], data[3]
     amount = float(amount)
+    base_amount = amount  # сохраняем исходную цену до скидки
 
     if method == "crypto":
         await callback.answer(
@@ -315,15 +315,37 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
 
     await callback.message.edit_text("⏳ <b>Формируем счет...</b>", parse_mode="HTML")
 
-    pending_count = await count_pending_transactions(session, callback.from_user.id)
-    if pending_count >= 1:
-        await callback.message.edit_text(
-            "<b>У вас уже есть незавершённый платёж.</b>\n\n"
-            "Завершите или дождитесь его истечения, прежде чем создавать новый.",
-            reply_markup=get_back_keyboard(),
-            parse_mode="HTML"
-        )
-        return
+    # Проверяем существующий незавершённый платёж
+    existing_tx = await get_pending_transaction(session, callback.from_user.id)
+    if existing_tx:
+        if existing_tx.external_id and existing_tx.redirect_url:
+            # Реальный незавершённый платёж — показываем кнопку возврата
+            builder = InlineKeyboardBuilder()
+            builder.row(InlineKeyboardButton(
+                text="💳 Вернуться к оплате",
+                url=existing_tx.redirect_url
+            ))
+            builder.row(InlineKeyboardButton(
+                text="🔄 Отменить и создать новый",
+                callback_data=f"cancel_pending:{existing_tx.id}:{tariff_key}:{base_amount}:{method}"
+            ))
+            builder.row(InlineKeyboardButton(
+                text="◀️ Назад", callback_data="back_to_main",
+                icon_custom_emoji_id="5258236805890710909", style="danger"
+            ))
+            await callback.message.edit_text(
+                f"<b>У вас есть незавершённый платёж.</b>\n\n"
+                f"Тариф: <b>{existing_tx.tariff_key}</b>\n"
+                f"Сумма: <b>{existing_tx.amount} ₽</b>\n\n"
+                f"Вернитесь к оплате или отмените и создайте новый:",
+                reply_markup=builder.as_markup(),
+                parse_mode="HTML"
+            )
+            await callback.answer()
+            return
+        else:
+            # Мёртвая транзакция (Platega не ответил) — отменяем автоматически
+            await update_transaction_status(session, existing_tx.id, "EXPIRED")
 
     tx = await create_transaction(session, callback.from_user.id, amount, tariff_key, payment_method=method)
 
@@ -331,6 +353,7 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
     payment_data = await platega.create_transaction(amount_to_pay, f"VPN: {tariff_key}", str(tx.id))
 
     if not payment_data or "redirect" not in payment_data:
+        await update_transaction_status(session, tx.id, "EXPIRED")
         await callback.message.edit_text(
             "<tg-emoji emoji-id=\"5260342697075416641\">❌</tg-emoji> <b>Ошибка при создании счета.</b>\n"
             "Попробуйте позже или выберите другой способ.",
@@ -339,7 +362,79 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
         )
         return
 
-    await update_transaction_id(session, tx.id, payment_data["transactionId"])
+    await update_transaction_id(
+        session, tx.id,
+        payment_data["transactionId"],
+        redirect_url=payment_data["redirect"]
+    )
+
+    from apps.db.database import async_session
+    asyncio.create_task(
+        _auto_confirm_payment(callback.message, tx.id, payment_data["transactionId"], async_session)
+    )
+
+    await callback.message.edit_text(
+        f"<tg-emoji emoji-id=\"5258477770735885832\">📄</tg-emoji> <b>Счет сформирован!</b>\n\n"
+        f"Сумма: <b>{amount} ₽</b> | Метод: <b>СБП</b>{discount_text}\n\n"
+        f"Нажмите кнопку ниже чтобы оплатить.",
+        reply_markup=get_payment_keyboard(payment_data["redirect"], str(tx.id)),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@menu_router.callback_query(F.data.startswith("cancel_pending:"))
+async def cancel_pending_and_create(callback: types.CallbackQuery, session: AsyncSession):
+    """Отменяет текущий незавершённый платёж и сразу создаёт новый."""
+    parts = callback.data.split(":")
+    old_tx_id = int(parts[1])
+    tariff_key = parts[2]
+    amount = float(parts[3])
+    method = parts[4]
+
+    await update_transaction_status(session, old_tx_id, "CANCELED")
+
+    user = await session.get(User, callback.from_user.id)
+    if not user:
+        await callback.answer("Ошибка: пользователь не найден.", show_alert=True)
+        return
+
+    # Применяем промокод если есть
+    promo = None
+    discount_text = ""
+    if user.active_promo_code_id:
+        promo = await session.get(PromoCode, user.active_promo_code_id)
+        if promo and promo.is_active and (not promo.expires_at or promo.expires_at > datetime.now()):
+            original_amount = amount
+            amount = round(amount * (1 - promo.discount / 100), 2)
+            saved = round(original_amount - amount, 2)
+            discount_text = f"\n🎟 Промокод <b>{promo.code}</b>: -{promo.discount}% (-{saved:.0f} ₽)"
+        else:
+            user.active_promo_code_id = None
+            await session.commit()
+            promo = None
+
+    await callback.message.edit_text("⏳ <b>Формируем счет...</b>", parse_mode="HTML")
+
+    tx = await create_transaction(session, callback.from_user.id, amount, tariff_key, payment_method=method)
+    amount_to_pay = round(amount / config.PAYMENT_COMMISSION_MULTIPLIER, 2)
+    payment_data = await platega.create_transaction(amount_to_pay, f"VPN: {tariff_key}", str(tx.id))
+
+    if not payment_data or "redirect" not in payment_data:
+        await update_transaction_status(session, tx.id, "EXPIRED")
+        await callback.message.edit_text(
+            "<tg-emoji emoji-id=\"5260342697075416641\">❌</tg-emoji> <b>Ошибка при создании счета.</b>\n"
+            "Попробуйте позже или выберите другой способ.",
+            reply_markup=get_back_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    await update_transaction_id(
+        session, tx.id,
+        payment_data["transactionId"],
+        redirect_url=payment_data["redirect"]
+    )
 
     from apps.db.database import async_session
     asyncio.create_task(
@@ -687,7 +782,7 @@ async def claim_trial(callback: types.CallbackQuery, session: AsyncSession):
         f"<tg-emoji emoji-id=\"5260341314095947411\">✅</tg-emoji> <b>Пробный период активирован!</b>\n\n"
         f"Доступ выдан на <b>{config.TRIAL_DAYS} дн.</b> до <b>{user.subscription_end.strftime('%d.%m.%Y %H:%M')}</b>."
         f"{link_text}{extra_msg}",
-        reply_markup=get_main_menu_keyboard(user),
+        reply_markup=get_main_menu_keyboard(user, language=getattr(user, "language", "ru")),
         parse_mode="HTML"
     )
     await callback.answer("✅ Подписка активирована!", show_alert=True)
