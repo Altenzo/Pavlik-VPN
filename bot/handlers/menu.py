@@ -782,7 +782,7 @@ async def claim_trial(callback: types.CallbackQuery, session: AsyncSession):
         f"<tg-emoji emoji-id=\"5260341314095947411\">✅</tg-emoji> <b>Пробный период активирован!</b>\n\n"
         f"Доступ выдан на <b>{config.TRIAL_DAYS} дн.</b> до <b>{user.subscription_end.strftime('%d.%m.%Y %H:%M')}</b>."
         f"{link_text}{extra_msg}",
-        reply_markup=get_main_menu_keyboard(user),
+        reply_markup=get_main_menu_keyboard(user, language=getattr(user, "language", "ru")),
         parse_mode="HTML"
     )
     await callback.answer("✅ Подписка активирована!", show_alert=True)
