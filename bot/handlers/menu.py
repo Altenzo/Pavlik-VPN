@@ -281,6 +281,7 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
     data = callback.data.split(":")
     tariff_key, amount, method = data[1], data[2], data[3]
     amount = float(amount)
+    base_amount = amount  # сохраняем исходную цену до скидки
 
     if method == "crypto":
         await callback.answer(
@@ -326,7 +327,7 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
             ))
             builder.row(InlineKeyboardButton(
                 text="🔄 Отменить и создать новый",
-                callback_data=f"cancel_pending:{existing_tx.id}:{tariff_key}:{amount}:{method}"
+                callback_data=f"cancel_pending:{existing_tx.id}:{tariff_key}:{base_amount}:{method}"
             ))
             builder.row(InlineKeyboardButton(
                 text="◀️ Назад", callback_data="back_to_main",
