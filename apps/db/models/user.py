@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, String, Boolean, DateTime, Float
+from sqlalchemy import BigInteger, String, Boolean, DateTime, Float, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 from apps.db.models.base import Base
 from datetime import datetime
@@ -34,6 +34,15 @@ class User(Base):
     referral_balance: Mapped[float] = mapped_column(Float, default=0.0)
     total_earned: Mapped[float] = mapped_column(Float, default=0.0)
 
+    # Блокировка
+    is_banned: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    ban_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Активный промокод (применяется при следующей покупке)
+    active_promo_code_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Язык интерфейса
+    language: Mapped[str] = mapped_column(String(10), default="ru", server_default="ru")
+
     def __repr__(self) -> str:
-        # Bug 1 fix: было self.user_id — поле называется id
         return f"<User id={self.id} full_name='{self.full_name}'>"

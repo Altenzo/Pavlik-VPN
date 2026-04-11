@@ -14,6 +14,7 @@ from apps.db.database import async_session
 from apps.db.models.transaction import Transaction
 from bot.middlewares.db import DbSessionMiddleware
 from bot.middlewares.admin import AdminMiddleware
+from bot.middlewares.ban import BanMiddleware
 from bot.handlers.start import start_router
 from bot.handlers.menu import menu_router
 from bot.handlers.admin import admin_router
@@ -64,6 +65,7 @@ async def main():
 
     dp.update.middleware(DbSessionMiddleware(async_session))
     dp.update.middleware(AdminMiddleware())
+    dp.update.middleware(BanMiddleware())
 
     dp.include_router(admin_router)
     dp.include_router(start_router)
