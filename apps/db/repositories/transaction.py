@@ -52,14 +52,17 @@ async def create_transaction(
 async def update_transaction_id(
     session: AsyncSession,
     transaction_id: int,
-    external_id: str  # Bug 2 fix: было platega_id — переименовано в external_id
+    external_id: str,
+    redirect_url: str = None,
 ):
     """
-    Обновляет внешний ID транзакции (от любой платежки).
+    Обновляет внешний ID транзакции (от любой платежки) и опционально ссылку на оплату.
     """
     transaction = await session.get(Transaction, transaction_id)
     if transaction:
-        transaction.external_id = external_id  # Bug 2 fix: было transaction.platega_id
+        transaction.external_id = external_id
+        if redirect_url is not None:
+            transaction.redirect_url = redirect_url
         await session.commit()
 
 
