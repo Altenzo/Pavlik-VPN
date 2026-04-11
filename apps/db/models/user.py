@@ -44,5 +44,9 @@ class User(Base):
     # Язык интерфейса
     language: Mapped[str] = mapped_column(String(10), default="ru", server_default="ru")
 
+    # Временные метки (созданы в начальной миграции)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     def __repr__(self) -> str:
         return f"<User id={self.id} full_name='{self.full_name}'>"
