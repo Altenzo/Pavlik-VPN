@@ -1,11 +1,18 @@
 import asyncio
+from datetime import datetime, timedelta
+
 from aiogram import Router, F, types
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-from datetime import datetime, timedelta
 
 from apps.db.models.user import User
 from apps.db.models.transaction import Transaction
+from apps.db.models.promo_code import PromoCode, PromoCodeUsage
 from bot.keyboards.main_menu import get_main_menu_keyboard
 from bot.keyboards.subscriptions import get_subscriptions_keyboard, get_payment_methods_keyboard
 from bot.keyboards.common import get_back_keyboard, get_back_to_profile_keyboard
@@ -22,6 +29,11 @@ from apps.db.repositories.transaction import (
     update_transaction_id,
     update_transaction_status,
     count_pending_transactions,
+)
+from apps.db.repositories.promo_code import (
+    get_promo_by_code,
+    has_user_used_promo,
+    record_promo_usage,
 )
 from config import config
 
@@ -47,6 +59,22 @@ TARIFF_DAYS = {
     "month_6": 180,
     "month_12": 365,
 }
+
+MAIN_TEXT = (
+    "<tg-emoji emoji-id=\"5258152182150077732\">⚡</tg-emoji> <b>Blago VPN — Ваш персональный ключ к свободе.</b>\n\n"
+    "Забудьте о границах в интернете. Мы обеспечиваем сверхбыстрое соединение, абсолютную анонимность и доступ к любому контенту в один клик.\n\n"
+    "<tg-emoji emoji-id=\"5260221883940347555\">🚀</tg-emoji> <b>Наши преимущества:</b>\n"
+    "  •  <b>Скорость:</b> До 1 Гбит/с без задержек.\n"
+    "  •  <b>Приватность:</b> Мы уважаем твое право на частную жизнь и не храним историю твоих действий.\n"
+    "  •  <b>Простота:</b> Настройка за 30 секунд прямо в Telegram.\n\n"
+    "<i>Ваша безопасность — наша работа. Подключайтесь и летайте!</i>"
+)
+
+
+# ─── FSM: активация промокода пользователем ──────────────────────
+class PromoActivation(StatesGroup):
+    enter_code = State()
+
 
 # ──────────────────────────────────────────────
 # Профиль
@@ -127,9 +155,6 @@ async def show_my_subs(callback: types.CallbackQuery, session: AsyncSession):
 
 @menu_router.callback_query(F.data == "user_agreement")
 async def show_user_agreement(callback: types.CallbackQuery):
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-    from aiogram.types import InlineKeyboardButton
-
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="📄 Пользовательское соглашение", url="https://telegra.ph/POLZOVATELSKOE-SOGLASHENIE-03-30-18")
@@ -210,9 +235,16 @@ async def withdraw_referral(callback: types.CallbackQuery, session: AsyncSession
 # ──────────────────────────────────────────────
 
 @menu_router.callback_query(F.data == "buy_subscription")
-async def select_subscription(callback: types.CallbackQuery):
+async def select_subscription(callback: types.CallbackQuery, session: AsyncSession):
+    user = await session.get(User, callback.from_user.id)
+    promo_note = ""
+    if user and user.active_promo_code_id:
+        promo = await session.get(PromoCode, user.active_promo_code_id)
+        if promo and promo.is_active and (not promo.expires_at or promo.expires_at > datetime.now()):
+            promo_note = f"\n\n🎟 Активен промокод <b>{promo.code}</b> — скидка <b>{promo.discount}%</b>"
+
     await callback.message.edit_text(
-        "<tg-emoji emoji-id=\"5258123337149717894\">📦</tg-emoji> <b>Выберите срок подписки:</b>",
+        f"<tg-emoji emoji-id=\"5258123337149717894\">📦</tg-emoji> <b>Выберите срок подписки:</b>{promo_note}",
         reply_markup=get_subscriptions_keyboard(),
         parse_mode="HTML"
     )
@@ -243,6 +275,24 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
             show_alert=True
         )
         return
+
+    # Проверяем активный промокод
+    user = await session.get(User, callback.from_user.id)
+    promo = None
+    discount_text = ""
+
+    if user and user.active_promo_code_id:
+        promo = await session.get(PromoCode, user.active_promo_code_id)
+        if promo and promo.is_active and (not promo.expires_at or promo.expires_at > datetime.now()):
+            original_amount = amount
+            amount = round(amount * (1 - promo.discount / 100), 2)
+            saved = round(original_amount - amount, 2)
+            discount_text = f"\n🎟 Промокод <b>{promo.code}</b>: -{promo.discount}% (-{saved:.0f} ₽)"
+        else:
+            # Промокод просрочен или неактивен — убираем
+            user.active_promo_code_id = None
+            await session.commit()
+            promo = None
 
     await callback.message.edit_text("⏳ <b>Формируем счет...</b>", parse_mode="HTML")
 
@@ -279,7 +329,7 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
 
     await callback.message.edit_text(
         f"<tg-emoji emoji-id=\"5258477770735885832\">📄</tg-emoji> <b>Счет сформирован!</b>\n\n"
-        f"Сумма: <b>{amount} ₽</b> | Метод: <b>СБП</b>\n\n"
+        f"Сумма: <b>{amount} ₽</b> | Метод: <b>СБП</b>{discount_text}\n\n"
         f"Нажмите кнопку ниже чтобы оплатить.",
         reply_markup=get_payment_keyboard(payment_data["redirect"], str(tx.id)),
         parse_mode="HTML"
@@ -343,9 +393,11 @@ async def _auto_confirm_payment(message: types.Message, tx_id: int, external_id:
 
 async def _activate_subscription_after_payment(session: AsyncSession, tx_id: int):
     lock = _payment_locks.setdefault(tx_id, asyncio.Lock())
-    async with lock:
-        await _activate_subscription_inner(session, tx_id)
-    _payment_locks.pop(tx_id, None)
+    try:
+        async with lock:
+            await _activate_subscription_inner(session, tx_id)
+    finally:
+        _payment_locks.pop(tx_id, None)
 
 
 async def _activate_subscription_inner(session: AsyncSession, tx_id: int):
@@ -381,23 +433,156 @@ async def _activate_subscription_inner(session: AsyncSession, tx_id: int):
         else:
             logger.warning(f"Remnawave create_user failed для user={user.id}, подписка обновлена только в БД")
 
+    # Фиксируем использование промокода
+    if user.active_promo_code_id:
+        await record_promo_usage(session, user.active_promo_code_id, user.id)
+        user.active_promo_code_id = None
+
     await session.commit()
 
 
 # ──────────────────────────────────────────────
-# Промокод
+# Промокод (активация пользователем)
 # ──────────────────────────────────────────────
 
 @menu_router.callback_query(F.data == "promo_code")
-async def show_promo_code(callback: types.CallbackQuery):
+async def show_promo_code(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(PromoActivation.enter_code)
     await callback.message.edit_text(
         "<tg-emoji emoji-id=\"5359719332542718652\">🎟</tg-emoji> <b>Активация промокода</b>\n\n"
-        "Введите промокод в ответном сообщении или обратитесь в поддержку:\n"
-        f"{config.SUPPORT_USERNAME}",
+        "Введите промокод в ответном сообщении:",
         reply_markup=get_back_keyboard(),
         parse_mode="HTML"
     )
     await callback.answer()
+
+
+@menu_router.message(StateFilter(PromoActivation.enter_code))
+async def activate_promo_code(message: types.Message, state: FSMContext, session: AsyncSession):
+    code = (message.text or "").strip().upper()
+    await state.clear()
+
+    if not code:
+        await message.answer("❌ Введите название промокода.")
+        return
+
+    user = await session.get(User, message.from_user.id)
+    if not user:
+        return
+
+    promo = await get_promo_by_code(session, code)
+
+    if not promo or not promo.is_active:
+        await message.answer(
+            "❌ <b>Промокод не найден</b> или недействителен.\n\nПроверьте правильность ввода.",
+            reply_markup=get_back_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    now = datetime.now()
+    if promo.expires_at and promo.expires_at < now:
+        await message.answer(
+            "❌ <b>Срок действия промокода истёк.</b>",
+            reply_markup=get_back_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    if promo.max_activations is not None and promo.current_activations >= promo.max_activations:
+        await message.answer(
+            "❌ <b>Промокод исчерпан</b> — все активации уже использованы.",
+            reply_markup=get_back_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    already_used = await has_user_used_promo(session, promo.id, user.id)
+    if already_used:
+        await message.answer(
+            "❌ Вы уже использовали этот промокод.",
+            reply_markup=get_back_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    # Сохраняем промокод на пользователе
+    user.active_promo_code_id = promo.id
+    await session.commit()
+
+    await message.answer(
+        f"✅ <b>Промокод активирован!</b>\n\n"
+        f"🎟 Код: <code>{promo.code}</code>\n"
+        f"💰 Скидка: <b>{promo.discount}%</b>\n\n"
+        f"Скидка будет применена при следующей покупке.\nВыберите тариф:",
+        reply_markup=get_subscriptions_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+# ──────────────────────────────────────────────
+# Язык
+# ──────────────────────────────────────────────
+
+@menu_router.message(Command("lang"))
+async def cmd_lang(message: types.Message, session: AsyncSession):
+    user = await session.get(User, message.from_user.id)
+    if not user:
+        return
+    await _show_lang_selection(message, user, edit=False)
+
+
+@menu_router.callback_query(F.data == "select_lang")
+async def show_lang_selection_cb(callback: types.CallbackQuery, session: AsyncSession):
+    user = await session.get(User, callback.from_user.id)
+    if not user:
+        await callback.answer()
+        return
+    await _show_lang_selection(callback.message, user, edit=True)
+    await callback.answer()
+
+
+async def _show_lang_selection(msg: types.Message, user: User, edit: bool):
+    current = "🇷🇺 Русский" if user.language == "ru" else "🇬🇧 English"
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🇷🇺 Русский", callback_data="set_lang:ru"),
+        InlineKeyboardButton(text="🇬🇧 English", callback_data="set_lang:en"),
+    )
+    builder.row(InlineKeyboardButton(
+        text="Назад", callback_data="back_to_main",
+        icon_custom_emoji_id="5258236805890710909", style="danger"
+    ))
+    text = (
+        f"🌐 <b>Язык интерфейса</b>\n\n"
+        f"Текущий язык: <b>{current}</b>\n\n"
+        f"Выберите язык:"
+    )
+    if edit:
+        await msg.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    else:
+        await msg.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@menu_router.callback_query(F.data.startswith("set_lang:"))
+async def set_language(callback: types.CallbackQuery, session: AsyncSession):
+    lang = callback.data.split(":")[1]
+    user = await session.get(User, callback.from_user.id)
+    if not user:
+        await callback.answer()
+        return
+
+    user.language = lang
+    await session.commit()
+
+    lang_name = "🇷🇺 Русский" if lang == "ru" else "🇬🇧 English"
+    await callback.answer(f"✅ Язык изменён: {lang_name}", show_alert=True)
+
+    await callback.message.edit_text(
+        MAIN_TEXT,
+        reply_markup=get_main_menu_keyboard(user),
+        parse_mode="HTML"
+    )
 
 
 # ──────────────────────────────────────────────
@@ -477,9 +662,6 @@ async def claim_trial(callback: types.CallbackQuery, session: AsyncSession):
 
 @menu_router.callback_query(F.data == "instructions")
 async def show_instructions(callback: types.CallbackQuery):
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-    from aiogram.types import InlineKeyboardButton
-
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="📱 Android", callback_data="instr:android"),
@@ -503,9 +685,6 @@ async def show_instructions(callback: types.CallbackQuery):
 
 @menu_router.callback_query(F.data.startswith("instr:"))
 async def show_platform_apps(callback: types.CallbackQuery):
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-    from aiogram.types import InlineKeyboardButton
-
     platform = callback.data.split(":")[1]
     platform_names = {
         "android": "📱 Android",
@@ -533,9 +712,6 @@ async def show_platform_apps(callback: types.CallbackQuery):
 
 @menu_router.callback_query(F.data.startswith("app:"))
 async def show_app_wip(callback: types.CallbackQuery):
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-    from aiogram.types import InlineKeyboardButton
-
     platform = callback.data.split(":")[1]
 
     builder = InlineKeyboardBuilder()
@@ -558,13 +734,7 @@ async def back_to_main(callback: types.CallbackQuery, session: AsyncSession):
         await callback.answer("Ошибка: Пользователь не найден.")
         return
     await callback.message.edit_text(
-        "<tg-emoji emoji-id=\"5258152182150077732\">⚡</tg-emoji> <b>Blago VPN — Ваш персональный ключ к свободе.</b>\n\n"
-        "Забудьте о границах в интернете. Мы обеспечиваем сверхбыстрое соединение, абсолютную анонимность и доступ к любому контенту в один клик.\n\n"
-        "<tg-emoji emoji-id=\"5260221883940347555\">🚀</tg-emoji> <b>Наши преимущества:</b>\n"
-        "  •  <b>Скорость:</b> До 1 Гбит/с без задержек.\n"
-        "  •  <b>Приватность:</b> Мы уважаем твое право на частную жизнь и не храним историю твоих действий.\n"
-        "  •  <b>Простота:</b> Настройка за 30 секунд прямо в Telegram.\n\n"
-        "<i>Ваша безопасность — наша работа. Подключайтесь и летайте!</i>",
+        MAIN_TEXT,
         reply_markup=get_main_menu_keyboard(user),
         parse_mode="HTML"
     )

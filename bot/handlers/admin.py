@@ -2,17 +2,23 @@ import asyncio
 import logging
 import logging.handlers
 import os
+import re
 import subprocess
 import tempfile
 from datetime import datetime, timedelta
 
 from aiogram import Router, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.db.models.user import User
 from apps.db.models.transaction import Transaction
+from apps.db.repositories.promo_code import create_promo_code
 from apps.services.vpn.remnawave_service import RemnawaveService
 from config import config
 
@@ -49,6 +55,213 @@ def admin_only(message: types.Message) -> bool:
     return is_admin(message.from_user.id)
 
 
+def admin_only_cb(callback: types.CallbackQuery) -> bool:
+    return is_admin(callback.from_user.id)
+
+
+# ─── FSM States для создания промокода ───────────────────────────
+class PromoCreation(StatesGroup):
+    select_discount = State()
+    select_expiry = State()
+    select_activations = State()
+    enter_name = State()
+
+
+# ─── Inline-клавиатуры для шагов создания промокода ──────────────
+def _discount_kb():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="10%", callback_data="promo_disc:10"),
+        InlineKeyboardButton(text="20%", callback_data="promo_disc:20"),
+        InlineKeyboardButton(text="50%", callback_data="promo_disc:50"),
+    )
+    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="promo_cancel"))
+    return builder.as_markup()
+
+
+def _expiry_kb(discount: int):
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="1 день", callback_data="promo_exp:1"),
+        InlineKeyboardButton(text="7 дней", callback_data="promo_exp:7"),
+        InlineKeyboardButton(text="30 дней", callback_data="promo_exp:30"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="90 дней", callback_data="promo_exp:90"),
+        InlineKeyboardButton(text="365 дней", callback_data="promo_exp:365"),
+        InlineKeyboardButton(text="♾ Бессрочно", callback_data="promo_exp:0"),
+    )
+    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="promo_cancel"))
+    return builder.as_markup()
+
+
+def _activations_kb():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="1", callback_data="promo_act:1"),
+        InlineKeyboardButton(text="5", callback_data="promo_act:5"),
+        InlineKeyboardButton(text="10", callback_data="promo_act:10"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="50", callback_data="promo_act:50"),
+        InlineKeyboardButton(text="100", callback_data="promo_act:100"),
+        InlineKeyboardButton(text="♾ Без лимита", callback_data="promo_act:0"),
+    )
+    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="promo_cancel"))
+    return builder.as_markup()
+
+
+# ─── /blago_promo ────────────────────────────────────────────────
+@admin_router.message(Command("blago_promo"), F.func(admin_only))
+async def cmd_promo_start(message: types.Message, state: FSMContext):
+    log_action(message.from_user.id, "/blago_promo")
+    await state.set_state(PromoCreation.select_discount)
+    await message.answer(
+        "🎟 <b>Создание промокода</b>\n\n"
+        "Шаг 1 из 4: Выберите размер скидки:",
+        reply_markup=_discount_kb(),
+        parse_mode="HTML"
+    )
+
+
+@admin_router.callback_query(
+    F.data.startswith("promo_disc:"),
+    F.func(admin_only_cb),
+    StateFilter(PromoCreation.select_discount)
+)
+async def promo_select_discount(callback: types.CallbackQuery, state: FSMContext):
+    discount = int(callback.data.split(":")[1])
+    await state.update_data(discount=discount)
+    await state.set_state(PromoCreation.select_expiry)
+    await callback.message.edit_text(
+        f"🎟 <b>Создание промокода</b>\n\n"
+        f"✅ Скидка: <b>{discount}%</b>\n\n"
+        f"Шаг 2 из 4: Выберите срок действия:",
+        reply_markup=_expiry_kb(discount),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@admin_router.callback_query(
+    F.data.startswith("promo_exp:"),
+    F.func(admin_only_cb),
+    StateFilter(PromoCreation.select_expiry)
+)
+async def promo_select_expiry(callback: types.CallbackQuery, state: FSMContext):
+    days = int(callback.data.split(":")[1])
+    data = await state.get_data()
+    discount = data["discount"]
+
+    if days == 0:
+        expiry_text = "♾ Бессрочно"
+        await state.update_data(expires_at=None, expiry_text=expiry_text)
+    else:
+        expires_at = (datetime.now() + timedelta(days=days)).isoformat()
+        expiry_text = f"{days} дн."
+        await state.update_data(expires_at=expires_at, expiry_text=expiry_text)
+
+    await state.set_state(PromoCreation.select_activations)
+    await callback.message.edit_text(
+        f"🎟 <b>Создание промокода</b>\n\n"
+        f"✅ Скидка: <b>{discount}%</b>\n"
+        f"✅ Срок: <b>{expiry_text}</b>\n\n"
+        f"Шаг 3 из 4: Выберите количество активаций:",
+        reply_markup=_activations_kb(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@admin_router.callback_query(
+    F.data.startswith("promo_act:"),
+    F.func(admin_only_cb),
+    StateFilter(PromoCreation.select_activations)
+)
+async def promo_select_activations(callback: types.CallbackQuery, state: FSMContext):
+    max_act = int(callback.data.split(":")[1])
+    data = await state.get_data()
+    discount = data["discount"]
+    expiry_text = data.get("expiry_text", "—")
+
+    max_act_val = None if max_act == 0 else max_act
+    act_text = "♾ Без лимита" if max_act == 0 else str(max_act)
+
+    await state.update_data(max_activations=max_act_val, act_text=act_text)
+    await state.set_state(PromoCreation.enter_name)
+    await callback.message.edit_text(
+        f"🎟 <b>Создание промокода</b>\n\n"
+        f"✅ Скидка: <b>{discount}%</b>\n"
+        f"✅ Срок: <b>{expiry_text}</b>\n"
+        f"✅ Активаций: <b>{act_text}</b>\n\n"
+        f"Шаг 4 из 4: <b>Введите название промокода</b>\n"
+        f"<i>Только латинские буквы, цифры и '_' (2–32 символа)\n"
+        f"Например: SUMMER2025 или VIP_10</i>",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@admin_router.message(StateFilter(PromoCreation.enter_name), F.func(admin_only))
+async def promo_enter_name(message: types.Message, state: FSMContext, session: AsyncSession):
+    code = (message.text or "").strip().upper()
+
+    if not re.match(r'^[A-Z0-9_]{2,32}$', code):
+        await message.answer(
+            "❌ Некорректное название.\n"
+            "Допустимы только латинские буквы, цифры и '_' (2–32 символа).\n\n"
+            "Попробуйте ещё раз:"
+        )
+        return
+
+    data = await state.get_data()
+    discount = data["discount"]
+    expires_at_str = data.get("expires_at")
+    max_activations = data.get("max_activations")
+    expiry_text = data.get("expiry_text", "—")
+    act_text = data.get("act_text", "—")
+
+    expires_at = datetime.fromisoformat(expires_at_str) if expires_at_str else None
+
+    try:
+        promo = await create_promo_code(
+            session,
+            code=code,
+            discount=discount,
+            created_by=message.from_user.id,
+            expires_at=expires_at,
+            max_activations=max_activations,
+        )
+        await state.clear()
+        log_action(message.from_user.id, f"/blago_promo create code={code} discount={discount}%")
+        await message.answer(
+            f"✅ <b>Промокод создан!</b>\n\n"
+            f"🎟 Код: <code>{promo.code}</code>\n"
+            f"💰 Скидка: <b>{promo.discount}%</b>\n"
+            f"⏳ Срок: <b>{expiry_text}</b>\n"
+            f"🔢 Активаций: <b>{act_text}</b>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        if "unique" in str(e).lower():
+            await message.answer(
+                f"❌ Промокод <code>{code}</code> уже существует.\n"
+                f"Введите другое название:",
+                parse_mode="HTML"
+            )
+        else:
+            await state.clear()
+            logger.error(f"promo create error: {e}", exc_info=True)
+            await message.answer(f"❌ Ошибка создания промокода: <code>{e}</code>", parse_mode="HTML")
+
+
+@admin_router.callback_query(F.data == "promo_cancel", F.func(admin_only_cb))
+async def promo_cancel(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("❌ Создание промокода отменено.")
+    await callback.answer()
+
+
 # ─── /blago_users_stats ──────────────────────────────────────────
 @admin_router.message(Command("blago_users_stats"), F.func(admin_only))
 async def cmd_users_stats(message: types.Message, session: AsyncSession):
@@ -69,11 +282,15 @@ async def cmd_users_stats(message: types.Message, session: AsyncSession):
             select(func.count(User.id)).where(User.trial_used == True)
         )).scalar() or 0
 
+        banned = (await session.execute(
+            select(func.count(User.id)).where(User.is_banned == True)
+        )).scalar() or 0
+
         revenue = (await session.execute(
             select(func.sum(Transaction.amount)).where(Transaction.status == "CONFIRMED")
         )).scalar() or 0.0
 
-        today_start = datetime.now().replace(hour=0, minute=0, second=0)
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         new_today = (await session.execute(
             select(func.count(User.id)).where(User.created_at >= today_start)
         )).scalar() or 0
@@ -84,6 +301,7 @@ async def cmd_users_stats(message: types.Message, session: AsyncSession):
             f"✅ Активных подписок: <b>{active}</b>\n"
             f"🎁 Использовали триал: <b>{trial}</b>\n"
             f"🆕 Новых сегодня: <b>{new_today}</b>\n"
+            f"🚫 Заблокировано: <b>{banned}</b>\n"
             f"💰 Общая выручка: <b>{revenue:.2f} ₽</b>",
             parse_mode="HTML"
         )
@@ -105,6 +323,10 @@ async def cmd_give_sub(message: types.Message, session: AsyncSession):
         days = int(parts[2])
     except ValueError:
         await message.answer("❌ user_id и days должны быть числами")
+        return
+
+    if days <= 0 or days > 3650:
+        await message.answer("❌ Количество дней должно быть от 1 до 3650")
         return
 
     log_action(message.from_user.id, f"/blago_give_sub user={target_id} days={days}")
@@ -196,6 +418,8 @@ async def cmd_info(message: types.Message, session: AsyncSession):
             )
         )).scalar() or 0.0
 
+        ban_line = f"\n🚫 Заблокирован: <b>Да</b> ({user.ban_reason or '—'})" if user.is_banned else ""
+
         await message.answer(
             f"👤 <b>Карточка пользователя</b>\n\n"
             f"🆔 Telegram ID: <code>{user.id}</code>\n"
@@ -206,7 +430,8 @@ async def cmd_info(message: types.Message, session: AsyncSession):
             f"⏳ Истекает: {user.subscription_end.strftime('%d.%m.%Y %H:%M') if user.subscription_end else '—'}\n"
             f"🎁 Триал использован: {'Да' if user.trial_used else 'Нет'}\n"
             f"👥 Реферал от: {user.referred_by or '—'}\n"
-            f"💰 Реф. баланс: {user.referral_balance:.2f} ₽\n\n"
+            f"💰 Реф. баланс: {user.referral_balance:.2f} ₽"
+            f"{ban_line}\n\n"
             f"💳 Оплат: {txs} на сумму {total_paid:.2f} ₽\n"
             f"🔑 VPN UUID: <code>{user.vpn_uuid or '—'}</code>",
             parse_mode="HTML"
@@ -214,6 +439,84 @@ async def cmd_info(message: types.Message, session: AsyncSession):
     except Exception as e:
         logger.error(f"info error: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка БД: <code>{e}</code>", parse_mode="HTML")
+
+
+# ─── /blago_ban [user_id] [reason] ──────────────────────────────
+@admin_router.message(Command("blago_ban"), F.func(admin_only))
+async def cmd_ban(message: types.Message, session: AsyncSession):
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 2:
+        await message.answer("Использование: /blago_ban <user_id> [причина]")
+        return
+
+    try:
+        target_id = int(parts[1])
+    except ValueError:
+        await message.answer("❌ user_id должен быть числом")
+        return
+
+    if target_id in config.ADMIN_IDS:
+        await message.answer("❌ Нельзя заблокировать администратора")
+        return
+
+    reason = parts[2] if len(parts) > 2 else "Нарушение правил"
+    log_action(message.from_user.id, f"/blago_ban user={target_id} reason={reason}")
+
+    try:
+        user = await session.get(User, target_id)
+        if not user:
+            await message.answer(f"❌ Пользователь {target_id} не найден")
+            return
+
+        user.is_banned = True
+        user.ban_reason = reason
+        await session.commit()
+
+        await message.answer(
+            f"🚫 <b>Пользователь заблокирован</b>\n\n"
+            f"🆔 ID: <code>{target_id}</code>\n"
+            f"📝 Причина: {reason}",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"ban error: {e}", exc_info=True)
+        await message.answer(f"❌ Ошибка: <code>{e}</code>", parse_mode="HTML")
+
+
+# ─── /blago_unban [user_id] ──────────────────────────────────────
+@admin_router.message(Command("blago_unban"), F.func(admin_only))
+async def cmd_unban(message: types.Message, session: AsyncSession):
+    parts = message.text.split()
+    if len(parts) != 2:
+        await message.answer("Использование: /blago_unban <user_id>")
+        return
+
+    try:
+        target_id = int(parts[1])
+    except ValueError:
+        await message.answer("❌ user_id должен быть числом")
+        return
+
+    log_action(message.from_user.id, f"/blago_unban user={target_id}")
+
+    try:
+        user = await session.get(User, target_id)
+        if not user:
+            await message.answer(f"❌ Пользователь {target_id} не найден")
+            return
+
+        user.is_banned = False
+        user.ban_reason = None
+        await session.commit()
+
+        await message.answer(
+            f"✅ <b>Пользователь разблокирован</b>\n\n"
+            f"🆔 ID: <code>{target_id}</code>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"unban error: {e}", exc_info=True)
+        await message.answer(f"❌ Ошибка: <code>{e}</code>", parse_mode="HTML")
 
 
 # ─── /blago_broadcast [текст] ───────────────────────────────────
@@ -227,7 +530,7 @@ async def cmd_broadcast(message: types.Message, session: AsyncSession):
     log_action(message.from_user.id, f"/blago_broadcast text={text[:50]}")
 
     try:
-        result = await session.execute(select(User.id))
+        result = await session.execute(select(User.id).where(User.is_banned == False))
         user_ids = [row[0] for row in result.fetchall()]
 
         sent = 0
@@ -304,8 +607,11 @@ async def cmd_admin_help(message: types.Message):
         "/blago_users_stats — статистика пользователей\n"
         "/blago_give_sub &lt;id&gt; &lt;дни&gt; — выдать подписку\n"
         "/blago_info &lt;id или @username&gt; — карточка пользователя\n"
-        "/blago_broadcast &lt;текст&gt; — рассылка всем\n"
+        "/blago_broadcast &lt;текст&gt; — рассылка всем (кроме забаненных)\n"
         "/blago_backup — скачать дамп БД\n"
+        "/blago_promo — создать промокод (интерактивно)\n"
+        "/blago_ban &lt;id&gt; [причина] — заблокировать пользователя\n"
+        "/blago_unban &lt;id&gt; — разблокировать пользователя\n"
         "/blago_help — эта справка",
         parse_mode="HTML"
     )

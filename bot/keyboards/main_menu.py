@@ -16,7 +16,7 @@ def get_main_menu_keyboard(user: User) -> InlineKeyboardMarkup:
         )
     )
 
-    # Ряд 1: Пробный период
+    # Ряд 1: Пробный период (если не использован)
     if not user.trial_used:
         builder.row(
             InlineKeyboardButton(
@@ -51,7 +51,15 @@ def get_main_menu_keyboard(user: User) -> InlineKeyboardMarkup:
         )
     )
 
-    # Ряд 4: Поддержка → blago_vpn_manager | Канал → blago_vpn_news
+    # Ряд 4: Сменить язык
+    builder.row(
+        InlineKeyboardButton(
+            text="🌐 Сменить язык / Change language",
+            callback_data="select_lang"
+        )
+    )
+
+    # Ряд 5: Поддержка → blago_vpn_manager | Канал → blago_vpn_news
     builder.row(
         InlineKeyboardButton(
             text="Поддержка",
