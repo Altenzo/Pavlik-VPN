@@ -12,7 +12,7 @@ from sqlalchemy import select, func
 
 from apps.db.models.user import User
 from apps.db.models.transaction import Transaction
-from apps.db.models.promo_code import PromoCode, PromoCodeUsage
+from apps.db.models.promo_code import PromoCode
 from bot.keyboards.main_menu import get_main_menu_keyboard
 from bot.keyboards.subscriptions import get_subscriptions_keyboard, get_payment_methods_keyboard
 from bot.keyboards.common import get_back_keyboard, get_back_to_profile_keyboard
@@ -276,12 +276,17 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
         )
         return
 
-    # Проверяем активный промокод
+    # Загружаем пользователя
     user = await session.get(User, callback.from_user.id)
+    if not user:
+        await callback.answer("Ошибка: пользователь не найден.", show_alert=True)
+        return
+
+    # Проверяем активный промокод
     promo = None
     discount_text = ""
 
-    if user and user.active_promo_code_id:
+    if user.active_promo_code_id:
         promo = await session.get(PromoCode, user.active_promo_code_id)
         if promo and promo.is_active and (not promo.expires_at or promo.expires_at > datetime.now()):
             original_amount = amount
@@ -460,7 +465,6 @@ async def show_promo_code(callback: types.CallbackQuery, state: FSMContext):
 @menu_router.message(StateFilter(PromoActivation.enter_code))
 async def activate_promo_code(message: types.Message, state: FSMContext, session: AsyncSession):
     code = (message.text or "").strip().upper()
-    await state.clear()
 
     if not code:
         await message.answer("❌ Введите название промокода.")
@@ -468,6 +472,7 @@ async def activate_promo_code(message: types.Message, state: FSMContext, session
 
     user = await session.get(User, message.from_user.id)
     if not user:
+        await state.clear()
         return
 
     promo = await get_promo_by_code(session, code)
@@ -478,6 +483,7 @@ async def activate_promo_code(message: types.Message, state: FSMContext, session
             reply_markup=get_back_keyboard(),
             parse_mode="HTML"
         )
+        await state.clear()
         return
 
     now = datetime.now()
@@ -487,6 +493,7 @@ async def activate_promo_code(message: types.Message, state: FSMContext, session
             reply_markup=get_back_keyboard(),
             parse_mode="HTML"
         )
+        await state.clear()
         return
 
     if promo.max_activations is not None and promo.current_activations >= promo.max_activations:
@@ -495,6 +502,7 @@ async def activate_promo_code(message: types.Message, state: FSMContext, session
             reply_markup=get_back_keyboard(),
             parse_mode="HTML"
         )
+        await state.clear()
         return
 
     already_used = await has_user_used_promo(session, promo.id, user.id)
@@ -504,11 +512,13 @@ async def activate_promo_code(message: types.Message, state: FSMContext, session
             reply_markup=get_back_keyboard(),
             parse_mode="HTML"
         )
+        await state.clear()
         return
 
-    # Сохраняем промокод на пользователе
+    # Все проверки пройдены — сохраняем промокод и сбрасываем состояние
     user.active_promo_code_id = promo.id
     await session.commit()
+    await state.clear()
 
     await message.answer(
         f"✅ <b>Промокод активирован!</b>\n\n"
