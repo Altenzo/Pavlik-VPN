@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     INTERNAL_SQUAD_UUIDS: List[str] = Field(default_factory=list)
     EXTERNAL_SQUAD_UUID: Optional[str] = None
 
-    REFERRAL_COMMISSION_RATE: float = 0.20
+    REFERRAL_COMMISSION_RATE: float = 0.40
     PAYMENT_COMMISSION_MULTIPLIER: float = 1.13
     TRIAL_DAYS: int = 3
     SUPPORT_USERNAME: str = "@blago_vpn_manager"
