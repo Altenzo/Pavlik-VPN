@@ -15,12 +15,9 @@ class PlategaService:
         self.secret_key = secret_key
         self.base_url = "https://app.platega.io"
         
-        # Заголовки для авторизации (используем несколько вариантов для совместимости с разными версиями API)
         self.headers = {
             "X-MerchantId": self.merchant_id,
-            "X-Secret": self.secret_key, # Старый вариант
-            "X-API-KEY": self.secret_key, # Альтернативный вариант
-            "Authorization": f"Bearer {self.secret_key}", # Современный стандарт
+            "X-Secret": self.secret_key,
             "Content-Type": "application/json"
         }
 
