@@ -32,7 +32,7 @@ class PlategaService:
         """
         Создает транзакцию и возвращает ссылку на оплату
         """
-        endpoint = f"{self.base_url}/transaction/process"
+        endpoint = f"{self.base_url}/transaction"
 
         # Platega expects id as a valid UUID; derive one deterministically from order_id
         order_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, str(order_id)))
