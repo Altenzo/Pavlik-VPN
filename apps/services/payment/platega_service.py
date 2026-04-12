@@ -35,7 +35,7 @@ class PlategaService:
         """
         Создает транзакцию и возвращает ссылку на оплату
         """
-        endpoint = f"{self.base_url}/transaction/process"
+        endpoint = f"{self.base_url}/transaction"
 
         # Platega expects id as a valid UUID; derive one deterministically from order_id
         order_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, str(order_id)))
@@ -82,12 +82,12 @@ class PlategaService:
         Проверяет статус транзакции по её ID
         Возвращает: 'CONFIRMED', 'PENDING', 'CANCELED' и др.
         """
-        endpoint = f"{self.base_url}/transaction/{transaction_id}"
-        
+        endpoint = f"{self.base_url}/transaction/status"
+
         timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             try:
-                async with session.get(endpoint, headers=self.headers) as response:
+                async with session.get(endpoint, params={"id": transaction_id}, headers=self.headers) as response:
                     if response.status == 200:
                         data = await response.json()
                         return data.get("status")
