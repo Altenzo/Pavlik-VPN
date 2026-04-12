@@ -49,8 +49,9 @@ class PlategaService:
                 "currency": currency
             },
             "description": f"{description} (Заказ #{order_id})",
-            "returnUrl": f"https://t.me/blago_vpn_news",
-            "failedUrl": f"https://t.me/blago_vpn_news"
+            "callbackUrl": "https://bot.svinn.mooo.com/platega-webhook",
+            "returnUrl": "https://t.me/blago_vpn_news",
+            "failedUrl": "https://t.me/blago_vpn_news"
         }
 
         timeout = aiohttp.ClientTimeout(total=30)
