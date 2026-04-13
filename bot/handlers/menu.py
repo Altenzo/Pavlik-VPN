@@ -349,7 +349,7 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
 
     tx = await create_transaction(session, callback.from_user.id, amount, tariff_key, payment_method=method)
 
-    amount_to_pay = round(amount / config.PAYMENT_COMMISSION_MULTIPLIER, 2)
+    amount_to_pay = amount
     payment_data = await platega.create_transaction(amount_to_pay, f"VPN: {tariff_key}", str(tx.id))
 
     if not payment_data or "redirect" not in payment_data:
@@ -417,7 +417,7 @@ async def cancel_pending_and_create(callback: types.CallbackQuery, session: Asyn
     await callback.message.edit_text("⏳ <b>Формируем счет...</b>", parse_mode="HTML")
 
     tx = await create_transaction(session, callback.from_user.id, amount, tariff_key, payment_method=method)
-    amount_to_pay = round(amount / config.PAYMENT_COMMISSION_MULTIPLIER, 2)
+    amount_to_pay = amount
     payment_data = await platega.create_transaction(amount_to_pay, f"VPN: {tariff_key}", str(tx.id))
 
     if not payment_data or "redirect" not in payment_data:
