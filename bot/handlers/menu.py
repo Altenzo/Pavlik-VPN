@@ -796,12 +796,12 @@ async def claim_trial(callback: types.CallbackQuery, session: AsyncSession):
 async def show_instructions(callback: types.CallbackQuery):
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="📱 Android", callback_data="instr:android"),
-        InlineKeyboardButton(text="🍎 iOS", callback_data="instr:ios")
+        InlineKeyboardButton(text="Android", callback_data="instr:android", icon_custom_emoji_id="5359575107540892257"),
+        InlineKeyboardButton(text="iOS", callback_data="instr:ios", icon_custom_emoji_id="5359840360426126173")
     )
     builder.row(
-        InlineKeyboardButton(text="💻 Windows", callback_data="instr:windows"),
-        InlineKeyboardButton(text="🖥 macOS", callback_data="instr:macos")
+        InlineKeyboardButton(text="Windows", callback_data="instr:windows", icon_custom_emoji_id="5359700310132536945"),
+        InlineKeyboardButton(text="macOS", callback_data="instr:macos", icon_custom_emoji_id="5359661453563414473")
     )
     builder.row(
         InlineKeyboardButton(text="Назад", callback_data="back_to_main", icon_custom_emoji_id="5258236805890710909", style="danger")
@@ -819,10 +819,10 @@ async def show_instructions(callback: types.CallbackQuery):
 async def show_platform_apps(callback: types.CallbackQuery):
     platform = callback.data.split(":")[1]
     platform_names = {
-        "android": "📱 Android",
-        "ios": "🍎 iOS",
-        "windows": "💻 Windows",
-        "macos": "🖥 macOS",
+        "android": "Android",
+        "ios": "iOS",
+        "windows": "Windows",
+        "macos": "macOS",
     }
 
     builder = InlineKeyboardBuilder()
