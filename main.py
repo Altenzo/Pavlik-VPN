@@ -146,6 +146,13 @@ async def _auto_confirm_payment_by_id(bot: Bot, tx_id: int, external_id: str):
 
     platega = PlategaService(config.PLATEGA_MERCHANT_ID, config.PLATEGA_SECRET)
 
+    # Получаем user_id заранее, чтобы уведомить пользователя после подтверждения
+    user_id = None
+    async with async_session() as session:
+        tx = await session.get(Transaction, tx_id)
+        if tx:
+            user_id = tx.user_id
+
     for _ in range(30):
         await asyncio.sleep(20)
         try:
@@ -157,6 +164,17 @@ async def _auto_confirm_payment_by_id(bot: Bot, tx_id: int, external_id: str):
         if status == "CONFIRMED":
             async with async_session() as session:
                 await _activate_subscription_after_payment(session, tx_id)
+            # Уведомляем пользователя
+            if user_id:
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "<tg-emoji emoji-id=\"5260341314095947411\">✅</tg-emoji> <b>Оплата подтверждена!</b>\n"
+                        "Ваша подписка активирована. Ссылку ищите в Профиле → Мои подписки.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
             try:
                 for admin_id in config.ADMIN_IDS:
                     await bot.send_message(
