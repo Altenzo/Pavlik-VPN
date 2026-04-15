@@ -80,12 +80,12 @@ class PlategaService:
         Проверяет статус транзакции по её ID
         Возвращает: 'CONFIRMED', 'PENDING', 'CANCELED' и др.
         """
-        endpoint = f"{self.base_url}/transaction/status"
+        endpoint = f"{self.base_url}/transaction/{transaction_id}"
 
         timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             try:
-                async with session.get(endpoint, params={"id": transaction_id}, headers=self.headers) as response:
+                async with session.get(endpoint, headers=self.headers) as response:
                     response_text = await response.text()
                     logger.info(f"Platega check_status tx={transaction_id}: HTTP {response.status}, body={response_text[:200]}")
                     if response.status == 200:
