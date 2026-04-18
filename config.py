@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     PLATEGA_MERCHANT_ID: str
     PLATEGA_SECRET: str
 
+    # Heleket (crypto) — https://doc.heleket.com/ru
+    HELEKET_MERCHANT_ID: str = ""
+    HELEKET_API_KEY: str = ""
+    HELEKET_CALLBACK_URL: str = "https://bot.svinn.mooo.com/heleket-webhook"
+
     INTERNAL_SQUAD_UUIDS: List[str] = Field(default_factory=list)
     EXTERNAL_SQUAD_UUID: Optional[str] = None
 

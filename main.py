@@ -84,21 +84,30 @@ async def main():
         pending = result.scalars().all()
         for tx in pending:
             if tx.external_id:
-                logger.info(f"Восстанавливаем проверку платежа tx={tx.id} external_id={tx.external_id}")
+                logger.info(
+                    f"Восстанавливаем проверку платежа tx={tx.id} external_id={tx.external_id} method={tx.payment_method}"
+                )
                 asyncio.create_task(
-                    _auto_confirm_payment_by_id(bot, tx.id, tx.external_id)
+                    _auto_confirm_payment_by_id(bot, tx.id, tx.external_id, tx.payment_method)
                 )
 
     return bot, dp
 
 
+def _get_provider(method: str):
+    """Возвращает клиент провайдера платежей по названию метода."""
+    from apps.services.payment.platega_service import PlategaService
+    from apps.services.payment.heleket_service import HeleketService
+
+    if method == "crypto":
+        return HeleketService(config.HELEKET_MERCHANT_ID, config.HELEKET_API_KEY)
+    return PlategaService(config.PLATEGA_MERCHANT_ID, config.PLATEGA_SECRET)
+
+
 async def _payment_watchdog(bot: Bot):
     """Каждые 5 минут проверяет все PENDING транзакции."""
-    from apps.services.payment.platega_service import PlategaService
     from bot.handlers.menu import _activate_subscription_after_payment
     from apps.db.repositories.transaction import update_transaction_status
-
-    platega = PlategaService(config.PLATEGA_MERCHANT_ID, config.PLATEGA_SECRET)
 
     while True:
         await asyncio.sleep(300)
@@ -115,7 +124,8 @@ async def _payment_watchdog(bot: Bot):
             logger.info(f"Watchdog: найдено {len(pending)} PENDING транзакций")
             for tx in pending:
                 try:
-                    status = await platega.check_status(tx.external_id)
+                    provider = _get_provider(tx.payment_method)
+                    status = await provider.check_status(tx.external_id)
                     if status == "CONFIRMED":
                         async with async_session() as session:
                             await _activate_subscription_after_payment(session, tx.id)
@@ -139,13 +149,12 @@ async def _payment_watchdog(bot: Bot):
             logger.error(f"Watchdog: критическая ошибка: {e}", exc_info=True)
 
 
-async def _auto_confirm_payment_by_id(bot: Bot, tx_id: int, external_id: str):
+async def _auto_confirm_payment_by_id(bot: Bot, tx_id: int, external_id: str, method: str = "sbp"):
     """Восстанавливает проверку платежа после рестарта бота."""
-    from apps.services.payment.platega_service import PlategaService
     from bot.handlers.menu import _activate_subscription_after_payment
     from apps.db.repositories.transaction import update_transaction_status
 
-    platega = PlategaService(config.PLATEGA_MERCHANT_ID, config.PLATEGA_SECRET)
+    provider = _get_provider(method)
 
     # Получаем user_id заранее, чтобы уведомить пользователя после подтверждения
     user_id = None
@@ -157,7 +166,7 @@ async def _auto_confirm_payment_by_id(bot: Bot, tx_id: int, external_id: str):
     for _ in range(30):
         await asyncio.sleep(20)
         try:
-            status = await platega.check_status(external_id)
+            status = await provider.check_status(external_id)
         except Exception as e:
             logger.error(f"check_status error tx={tx_id}: {e}")
             continue

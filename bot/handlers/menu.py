@@ -21,6 +21,7 @@ from bot.keyboards.trial_kb import get_trial_confirmation_keyboard
 from bot.keyboards.referral_kb import get_referral_keyboard
 from bot.keyboards.payment_kb import get_payment_keyboard
 from apps.services.payment.platega_service import PlategaService
+from apps.services.payment.heleket_service import HeleketService
 from apps.services.vpn.remnawave_service import RemnawaveService
 from apps.db.repositories.transaction import (
     create_transaction,
@@ -44,6 +45,7 @@ menu_router = Router()
 _payment_locks: dict[int, asyncio.Lock] = {}
 
 platega = PlategaService(config.PLATEGA_MERCHANT_ID, config.PLATEGA_SECRET)
+heleket = HeleketService(config.HELEKET_MERCHANT_ID, config.HELEKET_API_KEY)
 remnawave = RemnawaveService(
     panel_url=config.PANEL_URL,
     api_token=config.PANEL_API_TOKEN,
@@ -283,9 +285,9 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
     amount = float(amount)
     base_amount = amount  # сохраняем исходную цену до скидки
 
-    if method == "crypto":
+    if method == "crypto" and not (config.HELEKET_MERCHANT_ID and config.HELEKET_API_KEY):
         await callback.answer(
-            "🛑 Криптовалюта пока недоступна. Используйте СБП.",
+            "🛑 Криптовалюта временно недоступна. Используйте СБП.",
             show_alert=True
         )
         return
@@ -344,15 +346,47 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
             await callback.answer()
             return
         else:
-            # Мёртвая транзакция (Platega не ответил) — отменяем автоматически
+            # Мёртвая транзакция (провайдер не ответил) — отменяем автоматически
             await update_transaction_status(session, existing_tx.id, "EXPIRED")
 
-    tx = await create_transaction(session, callback.from_user.id, amount, tariff_key, payment_method=method)
+    await _create_invoice_and_show(callback, session, tariff_key, amount, method, discount_text)
 
-    amount_to_pay = amount
-    payment_data = await platega.create_transaction(amount_to_pay, f"VPN: {tariff_key}", str(tx.id))
 
-    if not payment_data or "redirect" not in payment_data:
+async def _create_invoice_and_show(
+    callback: types.CallbackQuery,
+    session: AsyncSession,
+    tariff_key: str,
+    amount: float,
+    method: str,
+    discount_text: str,
+):
+    """
+    Создаёт транзакцию у выбранного провайдера (СБП → Platega, крипта → Heleket),
+    сохраняет external_id, ставит задачу авто-подтверждения и показывает счёт.
+    """
+    tx = await create_transaction(
+        session, callback.from_user.id, amount, tariff_key, payment_method=method
+    )
+
+    if method == "crypto":
+        payment_data = await heleket.create_transaction(
+            amount=amount,
+            description=f"VPN: {tariff_key}",
+            order_id=str(tx.id),
+            callback_url=config.HELEKET_CALLBACK_URL,
+        )
+        external_id = payment_data.get("uuid") if payment_data else None
+        pay_url = payment_data.get("url") if payment_data else None
+        method_label = "Криптовалюта"
+    else:
+        payment_data = await platega.create_transaction(
+            amount, f"VPN: {tariff_key}", str(tx.id)
+        )
+        external_id = payment_data.get("transactionId") if payment_data else None
+        pay_url = payment_data.get("redirect") if payment_data else None
+        method_label = "СБП"
+
+    if not payment_data or not external_id or not pay_url:
         await update_transaction_status(session, tx.id, "EXPIRED")
         await callback.message.edit_text(
             "<tg-emoji emoji-id=\"5260342697075416641\">❌</tg-emoji> <b>Ошибка при создании счета.</b>\n"
@@ -362,22 +396,18 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
         )
         return
 
-    await update_transaction_id(
-        session, tx.id,
-        payment_data["transactionId"],
-        redirect_url=payment_data["redirect"]
-    )
+    await update_transaction_id(session, tx.id, external_id, redirect_url=pay_url)
 
-    from apps.db.database import async_session
+    from apps.db.database import async_session as _async_session
     asyncio.create_task(
-        _auto_confirm_payment(callback.message, tx.id, payment_data["transactionId"], async_session)
+        _auto_confirm_payment(callback.message, tx.id, external_id, _async_session, method)
     )
 
     await callback.message.edit_text(
         f"<tg-emoji emoji-id=\"5258477770735885832\">📄</tg-emoji> <b>Счет сформирован!</b>\n\n"
-        f"Сумма: <b>{amount} ₽</b> | Метод: <b>СБП</b>{discount_text}\n\n"
+        f"Сумма: <b>{amount} ₽</b> | Метод: <b>{method_label}</b>{discount_text}\n\n"
         f"Нажмите кнопку ниже чтобы оплатить.",
-        reply_markup=get_payment_keyboard(payment_data["redirect"], str(tx.id)),
+        reply_markup=get_payment_keyboard(pay_url, str(tx.id)),
         parse_mode="HTML"
     )
     await callback.answer()
@@ -415,48 +445,22 @@ async def cancel_pending_and_create(callback: types.CallbackQuery, session: Asyn
             promo = None
 
     await callback.message.edit_text("⏳ <b>Формируем счет...</b>", parse_mode="HTML")
-
-    tx = await create_transaction(session, callback.from_user.id, amount, tariff_key, payment_method=method)
-    amount_to_pay = amount
-    payment_data = await platega.create_transaction(amount_to_pay, f"VPN: {tariff_key}", str(tx.id))
-
-    if not payment_data or "redirect" not in payment_data:
-        await update_transaction_status(session, tx.id, "EXPIRED")
-        await callback.message.edit_text(
-            "<tg-emoji emoji-id=\"5260342697075416641\">❌</tg-emoji> <b>Ошибка при создании счета.</b>\n"
-            "Попробуйте позже или выберите другой способ.",
-            reply_markup=get_back_keyboard(),
-            parse_mode="HTML"
-        )
-        return
-
-    await update_transaction_id(
-        session, tx.id,
-        payment_data["transactionId"],
-        redirect_url=payment_data["redirect"]
-    )
-
-    from apps.db.database import async_session
-    asyncio.create_task(
-        _auto_confirm_payment(callback.message, tx.id, payment_data["transactionId"], async_session)
-    )
-
-    await callback.message.edit_text(
-        f"<tg-emoji emoji-id=\"5258477770735885832\">📄</tg-emoji> <b>Счет сформирован!</b>\n\n"
-        f"Сумма: <b>{amount} ₽</b> | Метод: <b>СБП</b>{discount_text}\n\n"
-        f"Нажмите кнопку ниже чтобы оплатить.",
-        reply_markup=get_payment_keyboard(payment_data["redirect"], str(tx.id)),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await _create_invoice_and_show(callback, session, tariff_key, amount, method, discount_text)
 
 
-async def _auto_confirm_payment(message: types.Message, tx_id: int, external_id: str, session_maker):
+async def _auto_confirm_payment(
+    message: types.Message,
+    tx_id: int,
+    external_id: str,
+    session_maker,
+    method: str = "sbp",
+):
+    provider = heleket if method == "crypto" else platega
     # 90 раз по 20 сек = 30 минут
     for _ in range(90):
         await asyncio.sleep(20)
         try:
-            status = await platega.check_status(external_id)
+            status = await provider.check_status(external_id)
         except Exception as e:
             logger.error(f"check_status error tx={tx_id}: {e}")
             continue
