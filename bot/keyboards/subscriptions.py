@@ -1,5 +1,6 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from config import config
 
 def get_subscriptions_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -28,12 +29,13 @@ def get_payment_methods_keyboard(tariff_key: str, amount: float) -> InlineKeyboa
         icon_custom_emoji_id="5472095442445542168"
     ))
 
-    # Крипта
-    builder.row(InlineKeyboardButton(
-        text="Криптовалюта",
-        callback_data=f"buy:{tariff_key}:{int(float(amount))}:crypto",
-        icon_custom_emoji_id="5472191413489771345"
-    ))
+    # Крипта — показываем только если Heleket настроен
+    if config.HELEKET_MERCHANT_ID and config.HELEKET_API_KEY:
+        builder.row(InlineKeyboardButton(
+            text="Криптовалюта",
+            callback_data=f"buy:{tariff_key}:{int(float(amount))}:crypto",
+            icon_custom_emoji_id="5472191413489771345"
+        ))
 
     # Активировать промокод
     builder.row(InlineKeyboardButton(

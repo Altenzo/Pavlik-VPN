@@ -70,7 +70,9 @@ class HeleketService:
 
                     if resp.status != 200 or str(data.get("state")) != "0":
                         logger.error(
-                            f"Heleket {path} API error: HTTP {resp.status}, body={text[:300]}"
+                            f"Heleket {path} API error: HTTP {resp.status}, "
+                            f"state={data.get('state')}, message={data.get('message')}, "
+                            f"errors={data.get('errors')}, body={text[:500]}"
                         )
                         return None
 
