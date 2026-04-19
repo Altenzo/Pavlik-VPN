@@ -51,6 +51,19 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
+class _BadHttpMessageFilter(logging.Filter):
+    """Suppress harmless HTTP/2 probe errors that aiohttp logs at ERROR level."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno == logging.ERROR and "BadHttpMessage" in record.getMessage():
+            logger.debug("Ignored HTTP/2 probe: %s", record.getMessage())
+            return False
+        return True
+
+
+logging.getLogger("aiohttp.server").addFilter(_BadHttpMessageFilter())
+
+
 # ─── Уведомление админов ────────────────────────────────────────
 async def notify_admins(bot: Bot, text: str):
     for admin_id in config.ADMIN_IDS:
