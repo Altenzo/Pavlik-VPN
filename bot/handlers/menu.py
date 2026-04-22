@@ -847,6 +847,19 @@ async def show_platform_apps(callback: types.CallbackQuery):
 
 
 ANDROID_INSTRUCTION_URL = "https://telegra.ph/Instrukciya-po-podklyucheniya-servisa-Blago-Vpn-04-22"
+IOS_INSTRUCTION_URL = "https://telegra.ph/Instrukciya-po-podklyucheniyu-Blago-VPN-04-22"
+
+_INSTRUCTION_URLS = {
+    "android": ANDROID_INSTRUCTION_URL,
+    "ios": IOS_INSTRUCTION_URL,
+}
+
+_PLATFORM_LABELS = {
+    "android": "Android",
+    "ios": "iOS",
+    "windows": "Windows",
+    "macos": "macOS",
+}
 
 
 @menu_router.callback_query(F.data.startswith("app:"))
@@ -856,14 +869,16 @@ async def show_app_wip(callback: types.CallbackQuery):
     app = parts[2] if len(parts) > 2 else ""
 
     builder = InlineKeyboardBuilder()
+    instruction_url = _INSTRUCTION_URLS.get(platform)
 
-    if platform == "android":
+    if instruction_url:
         app_names = {"happ": "Happ", "v2raytun": "V2RayTun"}
-        app_title = app_names.get(app, "Android")
+        app_title = app_names.get(app, _PLATFORM_LABELS.get(platform, platform))
+        platform_label = _PLATFORM_LABELS.get(platform, platform)
 
         builder.row(InlineKeyboardButton(
             text="📖 Открыть инструкцию",
-            url=ANDROID_INSTRUCTION_URL,
+            url=instruction_url,
         ))
         builder.row(InlineKeyboardButton(
             text="Назад",
@@ -873,9 +888,9 @@ async def show_app_wip(callback: types.CallbackQuery):
         ))
 
         await callback.message.edit_text(
-            f"<b>Инструкция по подключению — Android ({app_title})</b>\n\n"
-            "Нажмите кнопку ниже, чтобы открыть пошаговую инструкцию по подключению "
-            "сервиса <b>Blago VPN</b> на устройстве Android.",
+            f"<b>Инструкция по подключению — {platform_label} ({app_title})</b>\n\n"
+            f"Нажмите кнопку ниже, чтобы открыть пошаговую инструкцию по подключению "
+            f"сервиса <b>Blago VPN</b> на устройстве {platform_label}.",
             reply_markup=builder.as_markup(),
             parse_mode="HTML",
         )
