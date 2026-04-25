@@ -81,6 +81,14 @@ class RemnawaveService:
             logger.error(f"Remnawave extend_user(uuid={vpn_uuid}): {e}")
             return False
 
+    async def revoke_subscription(self, vpn_uuid: str) -> Optional[VpnUser]:
+        try:
+            data = await self._request("POST", f"/api/users/{vpn_uuid}/actions/revoke")
+            return self._parse(data.get("response", data))
+        except Exception as e:
+            logger.error(f"Remnawave revoke_subscription(uuid={vpn_uuid}): {e}")
+            return None
+
     async def get_user(self, vpn_uuid: str) -> Optional[VpnUser]:
         try:
             data = await self._request("GET", f"/api/users/{vpn_uuid}")

@@ -136,6 +136,17 @@ async def show_history_tx(callback: types.CallbackQuery, session: AsyncSession):
     await callback.answer()
 
 
+def _my_subs_keyboard(can_refresh: bool) -> types.InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if can_refresh:
+        builder.row(InlineKeyboardButton(text="🔄 Обновить ссылку", callback_data="refresh_link"))
+    builder.row(InlineKeyboardButton(
+        text="Назад", callback_data="profile",
+        icon_custom_emoji_id="5258236805890710909", style="danger"
+    ))
+    return builder.as_markup()
+
+
 @menu_router.callback_query(F.data == "my_subs")
 async def show_my_subs(callback: types.CallbackQuery, session: AsyncSession):
     user = await session.get(User, callback.from_user.id)
@@ -156,16 +167,59 @@ async def show_my_subs(callback: types.CallbackQuery, session: AsyncSession):
         sub_status = "❌ Не активна"
 
     vless_text = ""
+    can_refresh = bool(user.vless_link and user.is_active and user.vpn_uuid)
     if user.vless_link and user.is_active:
         vless_text = f"\n\n<b>Ссылка для подключения:</b>\n<code>{user.vless_link}</code>"
 
     await callback.message.edit_text(
         f"<b>Ваши подписки</b>\n\n"
         f"Статус: {sub_status}{vless_text}",
-        reply_markup=get_back_to_profile_keyboard(),
+        reply_markup=_my_subs_keyboard(can_refresh),
         parse_mode="HTML"
     )
     await callback.answer()
+
+
+@menu_router.callback_query(F.data == "refresh_link")
+async def refresh_link(callback: types.CallbackQuery, session: AsyncSession):
+    user = await session.get(User, callback.from_user.id)
+    if not user:
+        await callback.answer("Пользователь не найден.", show_alert=True)
+        return
+
+    if not (user.vpn_uuid and user.is_active):
+        await callback.answer("❌ Активная подписка не найдена.", show_alert=True)
+        return
+
+    await callback.answer("⏳ Генерируем новую ссылку...")
+
+    vpn_user = await remnawave.revoke_subscription(user.vpn_uuid)
+    if not vpn_user:
+        await callback.answer("❌ Не удалось обновить ссылку. Попробуйте позже.", show_alert=True)
+        return
+
+    user.vless_link = vpn_user.subscription_url
+    await session.commit()
+
+    now = datetime.now()
+    if user.subscription_end and user.subscription_end > now:
+        days_left = (user.subscription_end - now).days
+        sub_status = (
+            f"✅ Активна\n"
+            f"Истекает: <b>{user.subscription_end.strftime('%d.%m.%Y %H:%M')}</b> (осталось {days_left} д.)"
+        )
+    elif user.subscription_end:
+        sub_status = "⚠️ Истекла"
+    else:
+        sub_status = "❌ Не активна"
+
+    await callback.message.edit_text(
+        f"<b>Ваши подписки</b>\n\n"
+        f"Статус: {sub_status}\n\n"
+        f"<b>Ссылка для подключения:</b>\n<code>{user.vless_link}</code>",
+        reply_markup=_my_subs_keyboard(can_refresh=True),
+        parse_mode="HTML"
+    )
 
 
 @menu_router.callback_query(F.data == "user_agreement")
