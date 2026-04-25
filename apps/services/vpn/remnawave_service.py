@@ -84,14 +84,30 @@ class RemnawaveService:
             return None
 
     async def extend_user(self, vpn_uuid: str, new_expire_dt: datetime) -> bool:
+        # Remnawave разных версий: новые принимают PATCH /api/users с uuid в теле,
+        # старые — PATCH /api/users/{uuid}. Пробуем оба варианта.
+        naive_dt = new_expire_dt.replace(tzinfo=None)
+        expire_iso = naive_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
         try:
-            # Убираем tzinfo если есть — API ждёт UTC ISO строку
-            naive_dt = new_expire_dt.replace(tzinfo=None)
-            expire_iso = naive_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-            await self._request("PATCH", f"/api/users/{vpn_uuid}", json={"expireAt": expire_iso})
+            await self._request(
+                "PATCH",
+                "/api/users",
+                json={"uuid": vpn_uuid, "expireAt": expire_iso, "status": "ACTIVE"},
+            )
             return True
-        except Exception as e:
-            logger.error(f"Remnawave extend_user(uuid={vpn_uuid}): {e}")
+        except Exception as e1:
+            logger.warning(f"Remnawave PATCH /api/users (body uuid) failed: {e1}, fallback to path uuid")
+
+        try:
+            await self._request(
+                "PATCH",
+                f"/api/users/{vpn_uuid}",
+                json={"expireAt": expire_iso, "status": "ACTIVE"},
+            )
+            return True
+        except Exception as e2:
+            logger.error(f"Remnawave extend_user(uuid={vpn_uuid}) failed both variants: {e2}")
             return False
 
     async def enable_user(self, vpn_uuid: str) -> bool:
