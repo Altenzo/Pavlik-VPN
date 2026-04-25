@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.db.models.user import User
 from apps.db.models.transaction import Transaction
 from apps.db.repositories.promo_code import create_promo_code
-from apps.services.vpn.remnawave_service import RemnawaveService
+from apps.services.vpn.remnawave_service import RemnawaveService, format_bytes
 from config import config
 
 admin_router = Router()
@@ -420,6 +420,43 @@ async def cmd_info(message: types.Message, session: AsyncSession):
 
         ban_line = f"\n🚫 Заблокирован: <b>Да</b> ({user.ban_reason or '—'})" if user.is_banned else ""
 
+        traffic_line = ""
+        devices_block = ""
+        if user.vpn_uuid:
+            vpn_info = await remnawave.get_user(user.vpn_uuid)
+            if vpn_info:
+                used = format_bytes(vpn_info.used_traffic_bytes)
+                limit = (
+                    format_bytes(vpn_info.traffic_limit_bytes)
+                    if vpn_info.traffic_limit_bytes > 0 else "∞"
+                )
+                online_str = (
+                    vpn_info.online_at.strftime('%d.%m.%Y %H:%M')
+                    if vpn_info.online_at else "—"
+                )
+                traffic_line = (
+                    f"\n📊 Трафик: <b>{used}</b> / {limit}"
+                    f"\n🟢 Был онлайн: {online_str}"
+                )
+
+            devices = await remnawave.get_user_devices(user.vpn_uuid)
+            if devices:
+                lines = []
+                for i, dev in enumerate(devices, 1):
+                    label = dev.device_model or dev.platform or "Устройство"
+                    meta = []
+                    if dev.platform and dev.device_model:
+                        meta.append(dev.platform)
+                    if dev.created_at:
+                        meta.append(f"подкл. {dev.created_at.strftime('%d.%m.%Y')}")
+                    meta_text = f" ({', '.join(meta)})" if meta else ""
+                    lines.append(f"  {i}. {label}{meta_text}")
+                devices_block = (
+                    f"\n\n📱 Устройства ({len(devices)}):\n" + "\n".join(lines)
+                )
+            else:
+                devices_block = "\n\n📱 Устройства: пока не подключались"
+
         await message.answer(
             f"👤 <b>Карточка пользователя</b>\n\n"
             f"🆔 Telegram ID: <code>{user.id}</code>\n"
@@ -433,7 +470,9 @@ async def cmd_info(message: types.Message, session: AsyncSession):
             f"💰 Реф. баланс: {user.referral_balance:.2f} ₽"
             f"{ban_line}\n\n"
             f"💳 Оплат: {txs} на сумму {total_paid:.2f} ₽\n"
-            f"🔑 VPN UUID: <code>{user.vpn_uuid or '—'}</code>",
+            f"🔑 VPN UUID: <code>{user.vpn_uuid or '—'}</code>"
+            f"{traffic_line}"
+            f"{devices_block}",
             parse_mode="HTML"
         )
     except Exception as e:

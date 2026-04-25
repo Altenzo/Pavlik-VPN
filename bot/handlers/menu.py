@@ -22,7 +22,7 @@ from bot.keyboards.referral_kb import get_referral_keyboard
 from bot.keyboards.payment_kb import get_payment_keyboard
 from apps.services.payment.platega_service import PlategaService
 from apps.services.payment.heleket_service import HeleketService
-from apps.services.vpn.remnawave_service import RemnawaveService
+from apps.services.vpn.remnawave_service import RemnawaveService, format_bytes
 from apps.db.repositories.transaction import (
     create_transaction,
     get_transaction,
@@ -147,6 +147,65 @@ def _my_subs_keyboard(can_refresh: bool) -> types.InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def _format_sub_status(user: User) -> str:
+    now = datetime.now()
+    if user.subscription_end and user.subscription_end > now:
+        days_left = (user.subscription_end - now).days
+        return (
+            f"✅ Активна\n"
+            f"Истекает: <b>{user.subscription_end.strftime('%d.%m.%Y %H:%M')}</b> (осталось {days_left} д.)"
+        )
+    if user.subscription_end:
+        return "⚠️ Истекла"
+    return "❌ Не активна"
+
+
+async def _build_my_subs_text(user: User) -> str:
+    sub_status = _format_sub_status(user)
+
+    traffic_text = ""
+    devices_text = ""
+    if user.vpn_uuid:
+        vpn_info = await remnawave.get_user(user.vpn_uuid)
+        if vpn_info:
+            used = format_bytes(vpn_info.used_traffic_bytes)
+            limit = (
+                format_bytes(vpn_info.traffic_limit_bytes)
+                if vpn_info.traffic_limit_bytes > 0 else "∞"
+            )
+            traffic_text = f"\n\n📊 <b>Трафик:</b> {used} / {limit}"
+
+        devices = await remnawave.get_user_devices(user.vpn_uuid)
+        if devices:
+            lines = []
+            for i, dev in enumerate(devices, 1):
+                label = dev.device_model or dev.platform or "Устройство"
+                meta = []
+                if dev.platform and dev.device_model:
+                    meta.append(dev.platform)
+                if dev.created_at:
+                    meta.append(f"подкл. {dev.created_at.strftime('%d.%m.%Y')}")
+                meta_text = f" ({', '.join(meta)})" if meta else ""
+                lines.append(f"  {i}. {label}{meta_text}")
+            devices_text = (
+                f"\n\n📱 <b>Устройства ({len(devices)}):</b>\n" + "\n".join(lines)
+            )
+        else:
+            devices_text = "\n\n📱 <b>Устройства:</b> пока не подключались"
+
+    vless_text = ""
+    if user.vless_link and user.is_active:
+        vless_text = f"\n\n<b>Ссылка для подключения:</b>\n<code>{user.vless_link}</code>"
+
+    return (
+        f"<b>Ваши подписки</b>\n\n"
+        f"Статус: {sub_status}"
+        f"{traffic_text}"
+        f"{devices_text}"
+        f"{vless_text}"
+    )
+
+
 @menu_router.callback_query(F.data == "my_subs")
 async def show_my_subs(callback: types.CallbackQuery, session: AsyncSession):
     user = await session.get(User, callback.from_user.id)
@@ -154,26 +213,11 @@ async def show_my_subs(callback: types.CallbackQuery, session: AsyncSession):
         await callback.answer("Пользователь не найден.")
         return
 
-    now = datetime.now()
-    if user.subscription_end and user.subscription_end > now:
-        days_left = (user.subscription_end - now).days
-        sub_status = (
-            f"✅ Активна\n"
-            f"Истекает: <b>{user.subscription_end.strftime('%d.%m.%Y %H:%M')}</b> (осталось {days_left} д.)"
-        )
-    elif user.subscription_end:
-        sub_status = "⚠️ Истекла"
-    else:
-        sub_status = "❌ Не активна"
-
-    vless_text = ""
     can_refresh = bool(user.vless_link and user.is_active and user.vpn_uuid)
-    if user.vless_link and user.is_active:
-        vless_text = f"\n\n<b>Ссылка для подключения:</b>\n<code>{user.vless_link}</code>"
+    text = await _build_my_subs_text(user)
 
     await callback.message.edit_text(
-        f"<b>Ваши подписки</b>\n\n"
-        f"Статус: {sub_status}{vless_text}",
+        text,
         reply_markup=_my_subs_keyboard(can_refresh),
         parse_mode="HTML"
     )
@@ -187,36 +231,38 @@ async def refresh_link(callback: types.CallbackQuery, session: AsyncSession):
         await callback.answer("Пользователь не найден.", show_alert=True)
         return
 
-    if not (user.vpn_uuid and user.is_active):
+    if not (user.vpn_uuid and user.is_active and user.subscription_end):
         await callback.answer("❌ Активная подписка не найдена.", show_alert=True)
         return
 
+    if user.subscription_end <= datetime.now():
+        await callback.answer("❌ Подписка истекла, продлите её.", show_alert=True)
+        return
+
     await callback.answer("⏳ Генерируем новую ссылку...")
+
+    # Сначала синхронизируем срок действия в панели — иначе после revoke
+    # клиент может получить "expired", если в Remnawave expireAt отстал от БД.
+    extended = await remnawave.extend_user(user.vpn_uuid, new_expire_dt=user.subscription_end)
+    if not extended:
+        logger.warning(f"refresh_link: extend_user failed для user={user.id}")
 
     vpn_user = await remnawave.revoke_subscription(user.vpn_uuid)
     if not vpn_user:
         await callback.answer("❌ Не удалось обновить ссылку. Попробуйте позже.", show_alert=True)
         return
 
+    # Повторно фиксируем срок и активируем пользователя — на случай,
+    # если revoke сбросил expireAt или статус.
+    await remnawave.extend_user(user.vpn_uuid, new_expire_dt=user.subscription_end)
+    await remnawave.enable_user(user.vpn_uuid)
+
     user.vless_link = vpn_user.subscription_url
     await session.commit()
 
-    now = datetime.now()
-    if user.subscription_end and user.subscription_end > now:
-        days_left = (user.subscription_end - now).days
-        sub_status = (
-            f"✅ Активна\n"
-            f"Истекает: <b>{user.subscription_end.strftime('%d.%m.%Y %H:%M')}</b> (осталось {days_left} д.)"
-        )
-    elif user.subscription_end:
-        sub_status = "⚠️ Истекла"
-    else:
-        sub_status = "❌ Не активна"
-
+    text = await _build_my_subs_text(user)
     await callback.message.edit_text(
-        f"<b>Ваши подписки</b>\n\n"
-        f"Статус: {sub_status}\n\n"
-        f"<b>Ссылка для подключения:</b>\n<code>{user.vless_link}</code>",
+        text,
         reply_markup=_my_subs_keyboard(can_refresh=True),
         parse_mode="HTML"
     )
