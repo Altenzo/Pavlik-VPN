@@ -168,12 +168,16 @@ async def _build_my_subs_text(user: User) -> str:
     if user.vpn_uuid:
         vpn_info = await remnawave.get_user(user.vpn_uuid)
         if vpn_info:
-            used = format_bytes(vpn_info.used_traffic_bytes)
+            used_bytes = vpn_info.used_traffic_bytes or vpn_info.lifetime_used_traffic_bytes
+            used = format_bytes(used_bytes)
             limit = (
                 format_bytes(vpn_info.traffic_limit_bytes)
                 if vpn_info.traffic_limit_bytes > 0 else "∞"
             )
-            traffic_text = f"\n\n📊 <b>Трафик:</b> {used} / {limit}"
+            traffic_text = (
+                f"\n\n<tg-emoji emoji-id=\"5258330865674494479\">📊</tg-emoji> "
+                f"<b>Трафик:</b> {used} / {limit}"
+            )
 
         devices = await remnawave.get_user_devices(user.vpn_uuid)
         if devices:
@@ -656,6 +660,9 @@ async def _activate_subscription_inner(session: AsyncSession, tx_id: int):
         await record_promo_usage(session, user.active_promo_code_id, user.id)
         user.active_promo_code_id = None
 
+    user.is_trial_subscription = False
+    user.last_reminder_sent_at = None
+
     await session.commit()
 
 
@@ -880,6 +887,8 @@ async def claim_trial(callback: types.CallbackQuery, session: AsyncSession):
         user.subscription_end = new_end
 
     user.trial_used = True
+    user.is_trial_subscription = True
+    user.last_reminder_sent_at = None
     await session.commit()
 
     await callback.message.edit_text(

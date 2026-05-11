@@ -357,6 +357,8 @@ async def cmd_give_sub(message: types.Message, session: AsyncSession):
 
         user.subscription_end = new_end
         user.is_active = True
+        user.is_trial_subscription = False
+        user.last_reminder_sent_at = None
         await session.commit()
 
         await message.answer(

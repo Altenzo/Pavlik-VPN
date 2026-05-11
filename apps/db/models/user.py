@@ -44,6 +44,12 @@ class User(Base):
     # Язык интерфейса
     language: Mapped[str] = mapped_column(String(10), default="ru", server_default="ru")
 
+    # Напоминания о подписке
+    is_trial_subscription: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
+    last_reminder_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     
     def __repr__(self) -> str:
         return f"<User id={self.id} full_name='{self.full_name}'>"

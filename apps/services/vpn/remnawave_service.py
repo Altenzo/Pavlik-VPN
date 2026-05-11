@@ -129,7 +129,13 @@ class RemnawaveService:
     async def get_user(self, vpn_uuid: str) -> Optional[VpnUser]:
         try:
             data = await self._request("GET", f"/api/users/{vpn_uuid}")
-            return self._parse(data.get("response", data))
+            payload = data.get("response", data)
+            user = self._parse(payload)
+            if user.used_traffic_bytes == 0 and user.lifetime_used_traffic_bytes == 0:
+                logger.debug(
+                    f"Remnawave get_user(uuid={vpn_uuid}): нулевой трафик, raw keys={list(payload.keys()) if isinstance(payload, dict) else type(payload)}"
+                )
+            return user
         except Exception as e:
             logger.error(f"Remnawave get_user(uuid={vpn_uuid}): {e}")
             return None
@@ -201,11 +207,24 @@ class RemnawaveService:
             username=d.get("username", ""),
             subscription_url=sub_url,
             expire_at=expire_dt,
-            traffic_limit_bytes=d.get("trafficLimitBytes") or 0,
-            used_traffic_bytes=d.get("usedTrafficBytes") or d.get("used_traffic_bytes") or 0,
-            lifetime_used_traffic_bytes=(
+            traffic_limit_bytes=int(
+                d.get("trafficLimitBytes")
+                or d.get("traffic_limit_bytes")
+                or d.get("trafficLimit")
+                or 0
+            ),
+            used_traffic_bytes=int(
+                d.get("usedTrafficBytes")
+                or d.get("used_traffic_bytes")
+                or d.get("trafficUsedBytes")
+                or d.get("usedBytes")
+                or 0
+            ),
+            lifetime_used_traffic_bytes=int(
                 d.get("lifetimeUsedTrafficBytes")
                 or d.get("lifetime_used_traffic_bytes")
+                or d.get("totalUsedTrafficBytes")
+                or d.get("totalUsedBytes")
                 or 0
             ),
             online_at=online_dt,
