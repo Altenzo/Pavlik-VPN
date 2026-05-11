@@ -1,4 +1,5 @@
 import asyncio
+import os
 from datetime import datetime, timedelta
 
 from aiogram import Router, F, types
@@ -6,7 +7,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton, FSInputFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -353,6 +354,12 @@ async def withdraw_referral(callback: types.CallbackQuery, session: AsyncSession
 # Покупка подписки
 # ──────────────────────────────────────────────
 
+TARIFFS_IMAGE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "assets", "tariffs.png"
+)
+
+
 @menu_router.callback_query(F.data == "buy_subscription")
 async def select_subscription(callback: types.CallbackQuery, session: AsyncSession):
     user = await session.get(User, callback.from_user.id)
@@ -362,11 +369,35 @@ async def select_subscription(callback: types.CallbackQuery, session: AsyncSessi
         if promo and promo.is_active and (not promo.expires_at or promo.expires_at > datetime.now()):
             promo_note = f"\n\n🎟 Активен промокод <b>{promo.code}</b> — скидка <b>{promo.discount}%</b>"
 
-    await callback.message.edit_text(
-        f"<tg-emoji emoji-id=\"5258123337149717894\">📦</tg-emoji> <b>Выберите срок подписки:</b>{promo_note}",
-        reply_markup=get_subscriptions_keyboard(),
-        parse_mode="HTML"
+    caption = (
+        f"<tg-emoji emoji-id=\"5258123337149717894\">📦</tg-emoji> "
+        f"<b>Выберите срок подписки:</b>{promo_note}"
     )
+    kb = get_subscriptions_keyboard()
+
+    sent_photo = False
+    if os.path.exists(TARIFFS_IMAGE_PATH):
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        try:
+            await callback.message.answer_photo(
+                FSInputFile(TARIFFS_IMAGE_PATH),
+                caption=caption,
+                reply_markup=kb,
+                parse_mode="HTML",
+            )
+            sent_photo = True
+        except Exception as e:
+            logger.warning(f"buy_subscription: не удалось отправить фото тарифов: {e}")
+
+    if not sent_photo:
+        try:
+            await callback.message.edit_text(caption, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await callback.message.answer(caption, reply_markup=kb, parse_mode="HTML")
+
     await callback.answer()
 
 
