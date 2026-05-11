@@ -6,8 +6,8 @@ def get_subscriptions_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
 
     builder.row(InlineKeyboardButton(text="1 месяц — 149 ₽", callback_data="select_sub:month_1:149"))
-    builder.row(InlineKeyboardButton(text="3 месяца — 449 ₽", callback_data="select_sub:month_3:449"))
-    builder.row(InlineKeyboardButton(text="6 месяцев — 899 ₽", callback_data="select_sub:month_6:899"))
+    builder.row(InlineKeyboardButton(text="3 месяца — 429 ₽", callback_data="select_sub:month_3:429"))
+    builder.row(InlineKeyboardButton(text="6 месяцев — 859 ₽", callback_data="select_sub:month_6:859"))
     builder.row(InlineKeyboardButton(text="12 месяцев — 1499 ₽", callback_data="select_sub:month_12:1499"))
 
     builder.row(InlineKeyboardButton(
