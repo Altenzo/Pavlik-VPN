@@ -370,12 +370,20 @@ async def select_subscription(callback: types.CallbackQuery, session: AsyncSessi
     await callback.answer()
 
 
+_TARIFF_LABELS = {
+    "month_1":  "1 месяц",
+    "month_3":  "3 месяца",
+    "month_6":  "6 месяцев",
+    "month_12": "12 месяцев",
+}
+
 @menu_router.callback_query(F.data.startswith("select_sub:"))
 async def process_select_sub(callback: types.CallbackQuery):
     _, tariff_key, amount = callback.data.split(":")
+    tariff_label = _TARIFF_LABELS.get(tariff_key, tariff_key)
     await callback.message.edit_text(
         f"<tg-emoji emoji-id=\"5409048419211682843\">💲</tg-emoji> <b>Шаг 2: Способ оплаты</b>\n\n"
-        f"Тариф: <b>{tariff_key}</b>\nК оплате: <b>{amount} ₽</b>",
+        f"Тариф: <b>{tariff_label}</b>\nК оплате: <b>{amount} ₽</b>",
         reply_markup=get_payment_methods_keyboard(tariff_key, amount),
         parse_mode="HTML"
     )
@@ -441,7 +449,7 @@ async def process_buy_tariff(callback: types.CallbackQuery, session: AsyncSessio
             ))
             await callback.message.edit_text(
                 f"<b>У вас есть незавершённый платёж.</b>\n\n"
-                f"Тариф: <b>{existing_tx.tariff_key}</b>\n"
+                f"Тариф: <b>{_TARIFF_LABELS.get(existing_tx.tariff_key, existing_tx.tariff_key)}</b>\n"
                 f"Сумма: <b>{existing_tx.amount} ₽</b>\n\n"
                 f"Вернитесь к оплате или отмените и создайте новый:",
                 reply_markup=builder.as_markup(),
