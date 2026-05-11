@@ -408,11 +408,28 @@ _TARIFF_LABELS = {
     "month_12": "12 месяцев",
 }
 
+
+async def _safe_edit_text(callback: types.CallbackQuery, text: str, **kwargs):
+    """edit_text если сообщение текстовое, иначе удаляет и отправляет новое."""
+    if callback.message.photo or callback.message.video or callback.message.document:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(text, **kwargs)
+    else:
+        try:
+            await callback.message.edit_text(text, **kwargs)
+        except Exception:
+            await callback.message.answer(text, **kwargs)
+
+
 @menu_router.callback_query(F.data.startswith("select_sub:"))
 async def process_select_sub(callback: types.CallbackQuery):
     _, tariff_key, amount = callback.data.split(":")
     tariff_label = _TARIFF_LABELS.get(tariff_key, tariff_key)
-    await callback.message.edit_text(
+    await _safe_edit_text(
+        callback,
         f"<tg-emoji emoji-id=\"5409048419211682843\">💲</tg-emoji> <b>Шаг 2: Способ оплаты</b>\n\n"
         f"Тариф: <b>{tariff_label}</b>\nК оплате: <b>{amount} ₽</b>",
         reply_markup=get_payment_methods_keyboard(tariff_key, amount),
@@ -1070,7 +1087,8 @@ async def back_to_main(callback: types.CallbackQuery, session: AsyncSession):
         await callback.answer("Ошибка: Пользователь не найден.")
         return
     lang = getattr(user, "language", "ru")
-    await callback.message.edit_text(
+    await _safe_edit_text(
+        callback,
         _main_text(lang),
         reply_markup=get_main_menu_keyboard(user, language=lang),
         parse_mode="HTML"
