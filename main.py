@@ -89,6 +89,10 @@ async def main():
     # Фоновый watchdog — проверяет все PENDING платежи каждые 5 минут
     asyncio.create_task(_payment_watchdog(bot))
 
+    # Напоминания о скором окончании подписки
+    from apps.services.reminders import reminders_loop
+    asyncio.create_task(reminders_loop(bot))
+
     # Восстанавливаем проверку платежей для PENDING транзакций после рестарта
     async with async_session() as session:
         result = await session.execute(
